@@ -1,0 +1,1907 @@
+---
+title: "Loneliness Project"
+subtitle: "Data Cleaning"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r, echo = F}
+knitr::opts_chunk$set(echo = TRUE, warning = F, message = F, error = F)
+options(knitr.kable.NA = '')
+```
+
+# Workspace
+
+## Packages
+
+```{r packages}
+library(psych)       # psychometrics
+library(knitr)       # knit documents
+library(kableExtra)  # formatted tables
+library(readxl)      # read excel files
+library(haven)       # read spss files
+library(lme4)        # Frequentist MLM
+library(cowplot)
+library(semTools)
+library(broom.mixed) # summaries of models
+library(metafor)     # meta analysis
+library(mice)        # data imputation
+library(merTools)    # MLM helpers
+library(plyr)        # data wrangling
+library(tidyverse)   # data wrangling
+library(furrr)       # parallel purrr mapping
+```
+
+## Directory Path
+
+```{r path}
+# res_path <- "https://github.com/emoriebeck/loneliness-trajectories/blob/master"
+data_path <- "/Volumes/Emorie/data"
+# wd <- "~/Box/Loneliness"
+wd <- "/Volumes/Emorie/projects/Loneliness"
+```
+
+## Codebooks
+
+```{r codebooks}
+sheets <- sprintf("%s/Data_Dictionary_Final.xlsx", wd) %>% excel_sheets()
+
+# function for reading in sheets
+read_fun <- function(x){
+  sprintf("%s/Data_Dictionary_Final.xlsx", wd) %>% read_xlsx(., sheet = x)
+}
+
+# read in sheets and index source
+codebook <- tibble(
+  study = sheets,
+  codebook = map(study, read_fun)
+)
+
+studies <- c("LISS", "GSOEP", "HILDA", "SHP", "SATSA", "OCTOTWIN", "HRS", "SHARE", "ELSA")
+```
+
+# Data Cleaning  
+
+```{r mode fun}
+Mode <- function(x) {
+  ux <- unique(x)
+  ux <- ux[!is.na(ux)]
+  ux[which.max(tabulate(match(x, ux)))]
+}
+```
+
+## LISS
+
+### Load Data
+
+```{r liss clean fun, eval = T}
+liss_read_fun <- function(x){
+  sprintf("%s/liss/%s", data_path, x) %>% haven::read_sav(.) %>% select(one_of(old.names))
+}
+```
+
+```{r liss codebook}
+liss_codebook <- (codebook %>% filter(study == "LISS"))$codebook[[1]] %>% filter(drop == "no")
+liss_codebook
+```
+
+```{r liss data, eval = T}
+old.names <- unique(liss_codebook$orig_itemname) %>% str_to_lower
+datasets <- sprintf("%s/liss", data_path) %>% list.files()
+liss <- tibble(datasets = datasets) %>%
+  mutate(data = map(datasets, liss_read_fun)) 
+
+liss <- reduce((
+  liss %>% filter(!grepl("avar", datasets) & map_dbl(data, ncol) > 1))$data
+  , full_join) %>% 
+  haven::zap_labels(.)
+save(liss, file = sprintf("%s/01-data/clean/liss_raw.RData", wd))
+
+liss_avars <- tibble(ds = datasets[grepl("avar", datasets)]) %>%
+  mutate(data = map(ds, ~sprintf("%s/liss/%s", data_path, .) %>% haven::read_sav(.) %>% select(one_of(old.names)) %>% haven::zap_labels(.))) %>%
+  separate(ds, c("ds", "year", "scrap1", "scrap2"), sep = "_") %>%
+  separate(year, c("year", "month"), -2) %>%
+  select(year, month, data) %>% 
+  unnest(data) 
+```
+
+### Recoding & Reverse-Scoring
+
+```{r liss recode, eval = T}
+rename_fun <- function(cb, var){
+  print(var)
+  old.names <- unique((liss_codebook %>% filter(name == var))$orig_itemname)
+  df <- liss %>% 
+    select(SID = nomem_encr, one_of(old.names)) %>%
+    gather(key = orig_itemname, value = value, 
+           -SID, na.rm=T)
+  if(length(old.names) > 1){
+      df <- df %>% left_join(cb %>% select(itemname, year, orig_itemname, reverse_code:long_rule))
+  } else {
+    df <- df %>% left_join(cb %>% select(-(itemname:year)) %>% distinct()) %>% mutate(year = 0)
+  }
+  if(var %in% c("yearBrth", "gender")) df <- df %>% left_join(avars %>% select(-category, -name))
+  return(df)
+}
+
+liss_avars <- liss_avars %>%
+  select(SID = nomem_encr, everything()) %>%
+  group_by(SID, year) %>%
+  summarize_at(vars(gebjaar, geslacht, aantalhh, burgstat), Mode) %>%
+  ungroup() %>%
+  pivot_longer(cols = c("gebjaar", "geslacht", "aantalhh", "burgstat")
+               , names_to = "orig_itemname"
+               , values_to = "value") %>%
+  mutate(year = as.numeric(year)) %>%
+  full_join(
+    liss_codebook %>% 
+      filter(orig_itemname %in% c("gebjaar", "geslacht", "aantalhh", "burgstat")) %>%
+      select(category, name, itemname, year, orig_itemname,reverse_code:long_rule) %>%
+      distinct()
+    , by = c("orig_itemname", "year")
+    ) %>%
+  group_by(category, name) %>%
+  nest() %>%
+  ungroup() %>%
+  filter(!is.na(category))
+
+# rename variables   
+liss_recode <- liss_codebook %>%
+  filter(category != "proc" & !orig_itemname %in% c("gebjaar", "geslacht", "aantalhh", "burgstat")) %>%
+  select(category, name:wave, year:orig_itemname, reverse_code:long_rule) %>%
+  group_by(category, name) %>% 
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, name, rename_fun)) %>%
+  full_join(liss_avars)
+
+
+recode_fun <- function(rule, y){
+  x <- y$value
+  if(!is.na(rule)){y$value <- eval(parse(text = rule))}
+  return(y)
+}
+
+
+liss_recode <- liss_recode %>% 
+  mutate(data = map(data, ~(.) %>% 
+    group_by(recode) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = pmap(list(recode, data), recode_fun)) %>%
+    unnest(data) %>%
+    mutate(value = ifelse(value < 0 | is.nan(value) | is.infinite(value), NA, value))))
+
+
+# reverse code 
+liss_recode <- liss_recode %>%
+  mutate(data = map(data, ~(.) %>%
+          mutate(value = ifelse(tolower(reverse_code) == "no" | is.na(reverse_code), value, 
+                        reverse.code(-1, value, mini = mini, maxi = maxi)))))
+
+fun_call <- function(x, rule){
+    switch(rule,
+           average = mean(x, na.rm = T),
+           mode = Mode(x)[1],
+           sum = sum(x, na.rm = T),
+           skip = unique(x)[1],
+           select = unique(x)[1],
+           max = max(x, na.rm = T),
+           min = min(x, na.rm = T))
+  }
+```
+
+### Determine Baseline  
+
+```{r liss baseline}
+liss_waves <- liss_recode %>% 
+  filter(name == "lonely") %>%
+  unnest(data) %>%
+  filter(!is.na(value) & year > 2008) %>%
+  select(SID, name, year) %>%
+  distinct() %>%
+  group_by(SID) %>%
+  summarize(year = min(year)) %>%
+  ungroup()
+```
+
+
+### Covariates  
+
+```{r liss matching, eval = T}
+# bring in year or birth for cleaning
+liss_cov <- liss_recode %>% 
+  filter(category %in% c("covariates", "isolation")) %>% 
+  mutate(data = map(data, ~(.) %>% mutate(value = as.numeric(value)))) %>%
+  unnest(data) %>%
+  distinct() %>%
+  right_join(liss_waves %>% select(SID, p_year = year))
+
+# compositing within years
+year_comp_fun <- function(df, rule){
+  df %>%
+    # group by person and item (collapse across age)
+    group_by(SID, long_rule, name, itemname, year, p_year) %>% 
+    summarize(value = max(value, na.rm = T)) %>%
+    group_by(SID, long_rule, name, year, p_year) %>% 
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup() %>% 
+    mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value))
+}
+
+liss_cov <- liss_cov %>%
+  filter(year <= p_year & !is.na(value)) %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, year_comp_fun)) %>%
+  unnest(data)
+
+comp_fun <- function(data, rule){
+  data %>%
+    filter(year <= p_year) %>%
+    group_by(SID, name, p_year) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+liss_cov <- liss_cov %>%
+  group_by(long_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, long_rule, comp_fun)) %>%
+  unnest(data) %>%
+  mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value)) %>%
+  select(-long_rule) %>%
+  filter(!is.na(value)) %>%
+  pivot_wider(names_from = name, values_from = value, values_fn = list(value = max)) %>%
+  mutate(bmi = weight/((height/100)^2))
+```
+
+### Loneliness Variables  
+```{r liss pers, eval = T}
+liss_pred <- liss_recode %>%
+  filter(category %in% c("loneliness")) %>%
+  unnest(data) %>%
+  filter(!is.na(value)) %>%
+  select(category, name, itemname, year, SID, value, comp_rule, long_rule) %>%
+  distinct() %>%
+  group_by(SID, year) %>%
+  filter(n() > 1) %>%
+  ungroup()
+
+# alpha's
+liss_alpha <- liss_pred %>%
+  select(name, itemname, year, SID, value) %>%
+  group_by(name, year) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% pivot_wider(names_from = itemname, values_from = value)),
+         alpha = map(data, possibly(~psych::alpha((.) %>% select(-SID)), NA_real_)))
+
+items <- unique(liss_pred$itemname) 
+liss_mi <- liss_pred %>%
+  mutate(wave = year - 2007
+         , itemnum = as.numeric(mapvalues(itemname, items, 1:3))) %>%
+  select(itemnum, wave, SID, value) %>% 
+  pivot_wider(
+    names_from = c("itemnum", "wave")
+    , names_sep = "_"
+    , names_prefix = "lonely"
+    , values_from = "value"
+  )
+save(liss_mi, file = sprintf("%s/01-data/clean/liss_mi.RData", wd))
+
+
+comp_fun <- function(d, rule){
+  d %>%
+    group_by(SID, year, name) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+# create composites
+liss_pred <- liss_pred %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, comp_fun)) %>%
+  unnest(data) %>%
+  select(-comp_rule) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value")
+```
+
+### Combine Data  
+```{r combine liss}
+liss_comb <- liss_pred %>% filter(year != 2012) %>%
+  left_join(liss_cov %>% select(SID, age)) %>%
+  mutate(age = year - age - 60) %>% 
+  filter(age >= 16-60) %>%
+  filter(!is.na(lonely)) %>%
+  arrange(SID, year) %>%
+  group_by(SID) %>%
+  mutate(wave = year - min(year) + 1) %>%
+  ungroup() %>%
+  select(-year) %>%
+  pivot_wider(names_from = "wave"
+              , values_from = c("lonely", "age")
+              , names_glue = "{.value}{wave}") %>%
+  left_join(liss_cov %>% 
+              mutate(b.age.yrs = p_year - age
+                     , b.age = b.age.yrs - 60) %>% 
+              select(-p_year)) %>%
+  left_join(liss_pred %>% group_by(SID) %>% summarize(baseline.year = min(year), last.year = max(year))) %>%
+  left_join(liss_pred %>%
+              arrange(SID, year) %>%
+              group_by(SID) %>%
+              mutate(int = year - lag(year)) %>%
+              summarize(int = mean(int, na.rm = T)) %>%
+              filter(!is.nan(int))) %>%
+  left_join(liss_pred %>% group_by(SID) %>% summarize(meas.occ = n())) %>%
+  mutate(married = ifelse(marital == 1, 1, 0)
+         , divorced = ifelse(marital == 2, 1, 0)
+         , widowed = ifelse(marital == 3, 1, 0)
+         , never.married = ifelse(marital == 4, 1, 0)
+         , marital = mapvalues(marital, 1:4, LETTERS[1:4])) 
+
+save(liss_comb, liss_cov, liss_pred
+     , file = sprintf("%s/01-data/clean/liss_clean.RData", wd))
+```
+
+```{r}
+rm(list = ls()[grepl("liss", ls())])
+```
+
+## GSOEP  
+### Load Data  
+```{r gsoep clean fun, eval = F}
+gsoep_read_fun <- function(Year, WL){
+  old.names <- (gsoep_codebook %>% filter(year == Year | category == "proc"))$orig_itemname 
+  p <- sprintf("%s/gsoep/%sp.sav", data_path, WL) %>% haven::read_sav(.) %>%
+    full_join(sprintf("%s/gsoep/%skind.sav", data_path, WL) %>% haven::read_sav(.)) %>%
+    full_join(sprintf("%s/gsoep/%spequiv.sav", data_path, WL) %>% haven::read_sav(.)) %>%
+    full_join(sprintf("%s/gsoep/%spgen.sav", data_path, WL) %>% haven::read_sav(.)) %>%
+    full_join(sprintf("%s/gsoep/%spkal.sav", data_path, WL) %>% haven::read_sav(.)) %>%
+    # full_join(sprintf("%s/gsoep/%spost.sav", data_path, WL) %>% haven::read_sav(.)) %>%
+    select(one_of(old.names)) %>%
+    gather(key = orig_itemname, value = value, -persnr, -hhnr, na.rm = T)
+  
+ sprintf("%s/gsoep/%shbrutto.sav", data_path, WL) %>% haven::read_sav(.) %>%
+    full_join(sprintf("%s/gsoep/%sh.sav", data_path, WL) %>% haven::read_sav(.)) %>%
+    select(one_of(old.names)) %>%
+    gather(key = orig_itemname, value = value, -hhnr, na.rm = T) %>%
+    full_join(p %>% select(persnr, hhnr) %>% distinct()) %>%
+    full_join(p) 
+}
+```
+
+```{r gsoep codebook}
+gsoep_codebook <- (codebook %>% filter(study == "GSOEP"))$codebook[[1]] %>%
+  mutate(orig_itemname = str_to_lower(orig_itemname),
+         orig_itemname = str_remove_all(orig_itemname, "[:space:]"))
+gsoep_codebook
+```
+
+```{r gsoep data, eval = F}
+gsoep <- gsoep_codebook %>% 
+  select(wave, waveletter, year) %>%
+  filter(complete.cases(.)) %>%
+  distinct() %>%
+  arrange(year) %>%
+  # filter(year != "2018") %>%
+  mutate(data = map2(year, waveletter, gsoep_read_fun)) 
+
+old.names <- unique(gsoep_codebook$orig_itemname)
+gsoep_cog <- sprintf("%s/gsoep/cognit.sav", data_path) %>% haven::read_sav(.) %>%
+  select(persnr, hhnr, year = syear, one_of(old.names)) %>%
+  haven::zap_labels(.) %>%
+  select(-hhnr) %>%
+  gather(key = orig_itemname, value = value, -persnr, -year, na.rm = T)
+
+gsoep_long <- gsoep %>% unnest(data) %>%
+  select(-hhnr, -wave, -waveletter) %>%
+  # filter(persnr %in% gsoep_cog_subs) %>%
+  full_join(gsoep_cog) %>%
+  rename(SID = persnr)
+
+save(gsoep, file = sprintf("%s/01-data/clean/gsoep_raw.RData", wd))
+rm(gsoep)
+```
+
+### Recoding & Reverse Scoring  
+```{r gsoep recode}
+# join data with recoding info 
+gsoep_recode <- gsoep_codebook %>%
+  filter(category %in% c("loneliness", "outcome", "covariates")) %>%
+  select(category, name, itemname, wave, year, orig_itemname, reverse_code:long_rule) %>%
+  group_by(category, name) %>% 
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% left_join(gsoep_long))) 
+
+# recode 
+recode_fun <- function(rule, y, year){
+  print(rule)
+  x <- y$value
+  if(!is.na(rule)){y$value <- eval(parse(text = rule))}
+  return(y)
+}
+
+gsoep_recode <- gsoep_recode %>% 
+  mutate(data = map(data, ~(.) %>% 
+    group_by(recode, year) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = pmap(list(recode, data, year), recode_fun)) %>%
+    unnest(data) %>%
+    mutate(value = ifelse(value < 0 | is.nan(value) | is.infinite(value), NA, value))))
+
+# reverse code 
+gsoep_recode <- gsoep_recode %>%
+  mutate(data = map(data, ~(.) %>%
+    mutate(value = ifelse(reverse_code == "no" | is.na(reverse_code), value, 
+                        reverse.code(-1, value, mini = mini, maxi = maxi)))))
+
+fun_call <- function(x, rule){
+    switch(rule,
+           average = mean(x, na.rm = T),
+           mode = Mode(x)[1],
+           sum = sum(x, na.rm = T),
+           skip = unique(x)[1],
+           select = unique(x)[1],
+           max = max(x, na.rm = T),
+           min = min(x, na.rm = T))
+  }
+```
+
+### Determine Baseline  
+
+```{r gsoep baseline}
+gsoep_waves <- gsoep_recode %>% 
+  filter(name == "lonely") %>%
+  unnest(data) %>%
+  select(SID, name, year) %>%
+  distinct() %>%
+  group_by(SID) %>%
+  summarize(year = min(year)) %>%
+  ungroup()
+```
+
+
+### Covariates  
+
+```{r gsoep matching, eval = T}
+# bring in year or birth for cleaning
+gsoep_cov <- gsoep_recode %>% 
+  filter(category %in% c("covariates", "outcome")) %>% 
+  mutate(data = map(data, ~(.) %>% mutate(value = as.numeric(value)))) %>%
+  unnest(data) %>%
+  distinct() %>%
+  right_join(gsoep_waves %>% select(SID, p_year = year)) %>%
+  filter(!is.na(value)) %>%
+  group_by(SID, year, category, name, itemname, wave, comp_rule, long_rule, p_year) %>%
+  summarize(value = max(value, na.rm = T)) %>%
+  ungroup()
+
+# compositing within years
+year_comp_fun <- function(df, rule){
+  df %>%
+    distinct() %>%
+    # group by person and item (collapse across age)
+    group_by(SID, long_rule, name, itemname, year, p_year) %>% 
+    summarize(value = max(value, na.rm = T)) %>%
+    group_by(SID, long_rule, name, year, p_year) %>% 
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup() %>% 
+    mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value))
+}
+
+gsoep_cov <- gsoep_cov %>%
+  filter((year <= p_year & name != "cc") | 
+          (name == "mstat") & !is.na(value)) %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, year_comp_fun)) %>%
+  unnest(data)
+
+comp_fun <- function(data, rule){
+  data %>%
+    group_by(SID, name, p_year) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+gsoep_cov <- gsoep_cov %>%
+  mutate(year = ifelse(name %in% c("weight","height") & year == 2002, p_year, year)
+         , year = ifelse(name == "mstat" & year == 2007, p_year, year)) %>%
+  group_by(long_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, long_rule, comp_fun)) %>%
+  unnest(data) %>%
+  mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value)) %>%
+  select(-long_rule) %>%
+  pivot_wider(names_from = name, values_from = value, values_fn = list(value = max)) %>%
+  mutate(bmi = weight/((height/100)^2)
+         , yearBrth = ifelse(yearBrth < 1000, yearBrth + 1000, yearBrth)) %>%
+  left_join(
+    gsoep_recode %>%
+      filter(name == "cc") %>%
+      unnest(data) %>%
+      filter(!is.na(value)) %>%
+      group_by(name, itemname, SID) %>%
+      summarize(value = max(value, na.rm = T)) %>%
+      group_by(name, SID) %>%
+      summarize(value = sum(value, na.rm = T)) %>%
+      ungroup() %>%
+      pivot_wider(names_from = name, values_from = value)
+  ) 
+```
+
+### Loneliness Variables  
+```{r gsoep pers, eval = T}
+gsoep_pred <- gsoep_recode %>%
+  filter(category %in% c("loneliness")) %>%
+  unnest(data) %>%
+  filter(!is.na(value)) %>%
+  select(category, name, itemname, year, SID, value, comp_rule, long_rule) %>%
+  distinct()
+
+# alpha's
+gsoep_alpha <- gsoep_pred %>%
+  select(name, itemname, year, SID, value) %>%
+  group_by(name, year) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% pivot_wider(names_from = itemname, values_from = value)),
+         alpha = map(data, possibly(~psych::alpha((.) %>% select(-SID)), NA_real_)))
+
+
+comp_fun <- function(d, rule){
+  d %>%
+    group_by(SID, year, name) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+# create composites
+gsoep_pred <- gsoep_pred %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, comp_fun)) %>%
+  unnest(data) %>%
+  select(-comp_rule) %>%
+  group_by(SID, name) %>%
+  filter(n() >= 3) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value") %>%
+  ungroup()
+```
+
+### Combine Data  
+```{r combine gsoep}
+gsoep_comb <- gsoep_pred %>%
+  left_join(gsoep_cov %>% select(SID, yearBrth)) %>%
+  mutate(age = year - yearBrth - 60) %>% 
+  filter(!is.na(lonely)) %>%
+  arrange(SID, year) %>%
+  group_by(SID) %>%
+  mutate(wave = year - min(year) + 1) %>%
+  ungroup() %>%
+  select(-year) %>%
+  pivot_wider(names_from = "wave"
+              , values_from = c("lonely", "age")
+              , names_glue = "{.value}{wave}") %>%
+  left_join(gsoep_cov %>% 
+              mutate(b.age.yrs = p_year - yearBrth
+                     , b.age = b.age.yrs - 60) %>% 
+              select(-p_year)) %>%
+  left_join(gsoep_pred %>% group_by(SID) %>% summarize(baseline.year = min(year), last.year = max(year))) %>%
+  left_join(gsoep_pred %>%
+              arrange(SID, year) %>%
+              group_by(SID) %>%
+              mutate(int = year - lag(year)) %>%
+              summarize(int = mean(int, na.rm = T))) %>%
+  left_join(gsoep_pred %>% group_by(SID) %>% summarize(meas.occ = n())) %>%
+  mutate(married = ifelse(marital == 1, 1, 0)
+         , divorced = ifelse(marital == 2, 1, 0)
+         , widowed = ifelse(marital == 3, 1, 0)
+         , never.married = ifelse(marital == 4, 1, 0)
+         , marital = mapvalues(marital, 1:4, LETTERS[1:4])) 
+
+save(gsoep_comb, gsoep_cov, gsoep_pred
+     , file = sprintf("%s/01-data/clean/gsoep_clean.RData", wd))
+gsoep_mi <- gsoep_pred
+save(gsoep_mi
+     , file = sprintf("%s/01-data/clean/gsoep_mi.RData", wd))
+```
+
+```{r}
+rm(list = ls()[grepl("gsoep", ls())])
+```
+
+## HILDA  
+### Load Data  
+```{r hilda clean fun, eval = F}
+hilda_read_fun <- function(Year, WL){
+  old.names <- (hilda_codebook %>% filter(year == Year | year == 0))$orig_itemname
+  sprintf("%s/hilda/Combined %s180c.sav", data_path, WL) %>% haven::read_sav(.) %>%
+    select(one_of(old.names)) 
+}
+```
+
+```{r hilda codebook}
+hilda_codebook <- (codebook %>% filter(study == "HILDA"))$codebook[[1]]
+hilda_codebook
+```
+
+```{r hilda data, eval = F}
+hilda <- hilda_codebook %>% 
+  select(year, wave_letter) %>%
+  filter(!is.na(wave_letter)) %>%
+  distinct() %>%
+  filter(year < 2019) %>%
+  mutate(wave_letter = tolower(wave_letter), 
+         data = map2(year, wave_letter, hilda_read_fun)) 
+
+save(hilda, file = sprintf("%s/01-data/clean/hilda_raw.RData", wd))
+```
+
+### Recoding & Reverse Scoring  
+```{r hilda recode}
+rename_fun <- function(df, Year){
+  df <- df %>%
+    haven::zap_labels(.) %>%
+    gather(key = orig_itemname, value = value, -xwaveid, na.rm=T) %>%
+    mutate(value=as.numeric(value))
+  hilda_codebook %>% 
+    select(category, name, itemname, year, orig_itemname, reverse_code:long_rule) %>%
+    filter(year == Year & category %in% c("loneliness", "isolation", "covariates")) %>%
+    full_join(df)
+}
+
+# join data with recoding info 
+hilda_recode <- hilda %>%
+  mutate(data = map2(data, year, rename_fun)) %>% 
+  select(-year, -wave_letter) %>%
+  unnest(data) %>%
+  distinct() %>%
+  rename(SID = xwaveid) %>%
+  group_by(category, name) %>%
+  nest() %>% 
+  ungroup()
+
+# recode 
+recode_fun <- function(rule, y, year){
+  x <- y$value
+  if(!is.na(rule)){y$value <- eval(parse(text = rule))}
+  return(y)
+}
+
+hilda_recode <- hilda_recode %>% 
+  mutate(data = map(data, ~(.) %>% 
+    group_by(recode, year) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = pmap(list(recode, data, year), recode_fun)) %>%
+    unnest(data) %>%
+    mutate(value = ifelse(value < 0 | is.nan(value) | is.infinite(value), NA, value))))
+
+
+# reverse code 
+hilda_recode <- hilda_recode %>%
+  mutate(data = map(data, ~(.) %>%
+    mutate(value = ifelse(reverse_code == "no" | is.na(reverse_code), value, 
+                        reverse.code(-1, value, mini = mini, maxi = maxi)))))
+
+fun_call <- function(x, rule){
+    switch(rule,
+           average = mean(x, na.rm = T),
+           mode = Mode(x)[1],
+           sum = sum(x, na.rm = T),
+           skip = unique(x)[1],
+           select = unique(x)[1],
+           max = max(x, na.rm = T),
+           min = min(x, na.rm = T))
+  }
+```
+
+### Determine Baseline  
+
+```{r hilda baseline}
+hilda_waves <- hilda_recode %>% 
+  filter(name == "lonely") %>%
+  unnest(data) %>%
+  filter(!is.na(value)) %>%
+  select(SID, name, year) %>%
+  distinct() %>%
+  filter(year >= 2006) %>%
+  group_by(SID) %>%
+  summarize(year = min(year)) %>%
+  ungroup() %>%
+  mutate(wave = 1)
+```
+
+### Covariates  
+
+```{r hilda matching, eval = T}
+# bring in year or birth for cleaning
+hilda_cov <- hilda_recode %>% 
+  filter(category == "covariates") %>% 
+  mutate(data = map(data, ~(.) %>% mutate(value = as.numeric(value)) %>% 
+  distinct())) %>%
+  unnest(data) 
+
+# compositing within years
+year_comp_fun <- function(df, rule){
+  print(rule)
+  df %>%
+    # group by person and item (collapse across age)
+    group_by(SID, long_rule, name, itemname, year) %>% 
+    summarize(value = max(value, na.rm = T)) %>%
+    group_by(SID, long_rule, name, year) %>% 
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup() %>% 
+    mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value))
+}
+
+hilda_cov <- hilda_cov %>%
+  left_join(hilda_waves %>% select(SID, p_year = year)) %>%
+  mutate(year = ifelse(year == 2007 & name == "mstat", p_year, year)) %>%
+  filter(year <= p_year) %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, year_comp_fun)) %>%
+  unnest(data) %>%
+  right_join(hilda_waves %>% select(SID, p_year = year))
+
+comp_fun <- function(data, rule){
+  data %>%
+    group_by(SID, name, p_year) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+hilda_cov <- hilda_cov %>%
+  mutate(long_rule = ifelse(name == "mstat", "skip", long_rule)) %>%
+  filter(year <= p_year) %>%
+  group_by(long_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, long_rule, comp_fun)) %>%
+  unnest(data) %>%
+  mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value)) %>%
+  select(-long_rule) %>%
+  pivot_wider(names_from = name, values_from = value, values_fn = list(value = max)) %>%
+  mutate(bmi = weight/((height/100)^2))
+```
+
+### Loneliness   
+```{r hilda pers, eval = T}
+hilda_pred <- hilda_recode %>%
+  filter(category == "loneliness") %>%
+  unnest(data) %>%
+  right_join(hilda_waves %>% select(SID, p_year = year)) %>%
+  filter(year >= p_year) %>%
+  filter(!is.na(value)) %>%
+  select(category, name, itemname, year, SID, value, comp_rule, long_rule) %>%
+  distinct()
+
+# alpha's
+hilda_alpha <- hilda_pred %>%
+  select(name, itemname, year, SID, value) %>%
+  group_by(name, year) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% pivot_wider(names_from = itemname, values_from = value)),
+         alpha = map(data, possibly(~psych::alpha((.) %>% select(-SID)), NA_real_)))
+
+
+comp_fun <- function(d, rule){
+  d %>%
+    group_by(SID, year, name) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+# create composites
+hilda_pred <- hilda_pred %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, comp_fun)) %>%
+  unnest(data) %>%
+  select(-comp_rule) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value")
+```
+
+### Combine Data  
+```{r combine hilda}
+hilda_comb <- hilda_pred %>%
+  left_join(hilda_cov %>% select(SID, yearBrth)) %>%
+  mutate(age = year - yearBrth - 60) %>% 
+  select(-yearBrth) %>%
+  filter(!is.na(lonely)) %>%
+  arrange(SID, year) %>%
+  group_by(SID) %>%
+  mutate(wave = year - min(year) + 1) %>%
+  ungroup() %>%
+  select(-year) %>%
+  pivot_wider(names_from = "wave"
+              , values_from = c("lonely", "age")
+              , names_glue = "{.value}{wave}") %>%
+  left_join(hilda_cov %>% 
+              mutate(b.age.yrs = p_year - yearBrth
+                     , b.age = b.age.yrs - 60) %>% 
+              select(-p_year, -BMI)) %>%
+  left_join(hilda_pred %>% group_by(SID) %>% summarize(baseline.year = min(year), last.year = max(year))) %>%
+  left_join(hilda_pred %>%
+              arrange(SID, year) %>%
+              group_by(SID) %>%
+              mutate(int = year - lag(year)) %>%
+              summarize(int = mean(int, na.rm = T))) %>%
+  left_join(hilda_pred %>% group_by(SID) %>% summarize(meas.occ = n())) %>%
+  mutate(married = ifelse(marital == 1, 1, 0)
+         , divorced = ifelse(marital == 2, 1, 0)
+         , widowed = ifelse(marital == 3, 1, 0)
+         , never.married = ifelse(marital == 4, 1, 0)
+         , marital = mapvalues(marital, 1:4, LETTERS[1:4])) 
+hilda_comb
+
+save(hilda_pred, hilda_cov, hilda_comb
+     , file = sprintf("%s/01-data/clean/hilda_clean.RData", wd))
+hilda_mi <- hilda_pred
+save(hilda_mi
+     , file = sprintf("%s/01-data/clean/hilda_mi.RData", wd))
+```
+
+```{r}
+rm(list = ls()[grepl("hilda", ls())])
+```
+
+## SHP  
+
+### Load Data  
+```{r shp clean fun, eval = F}
+shp_read_fun <- function(x){
+  if(grepl("SHP0_BV", x)){old.names <- str_to_lower(old.names)}
+  y <- sprintf("%s/shp/%s", data_path, x) %>% haven::read_sav(.) %>%
+    haven::zap_labels(.) %>% select(one_of(old.names))
+  if(grepl("SHP0_BV", x)){colnames(y) <- str_to_upper(colnames(y))}
+  return(y)
+} 
+```
+
+```{r shp codebook}
+shp_codebook <- (codebook %>% filter(study == "SHP"))$codebook[[1]] %>%
+  filter(year <= 2020 | is.na(year) | year == 0)
+shp_codebook
+```
+
+```{r shp data, eval = F}
+old.names <- unique(shp_codebook$orig_itemname) %>% str_to_upper
+datasets <- sprintf("%s/shp", data_path) %>% list.files()
+shp <- tibble(datasets = datasets) %>%
+  mutate(data = map(datasets, shp_read_fun),
+         ncol = map(data, ncol)) %>% 
+  unnest(ncol) %>%
+  filter(ncol > 1)
+
+shp_grid <- shp %>% filter(datasets == "SHP_MH.sav")
+shp <- shp %>% filter(datasets != "SHP_MH.sav")
+
+shp <- reduce(shp$data, full_join) %>% haven::zap_labels(.)
+save(shp, file = sprintf("%s/01-data/clean/shp_raw.RData", wd))
+```
+
+### Recoding and Reverse Scoring  
+```{r}
+rename_fun <- function(cb, var){
+  print(var)
+  old.names <- unique((shp_codebook %>% filter(name == var))$orig_itemname)
+  df <- shp %>% 
+    select(SID = IDPERS, one_of(old.names)) %>%
+    gather(key = orig_itemname, value = value, -SID, na.rm=T)
+  if(length(old.names) > 1){
+      df %>% left_join(cb %>% select(itemname, year, orig_itemname, reverse_code:long_rule))
+  } else {
+    df %>% left_join(cb %>% select(-(itemname:year), -dataset) %>% distinct()) %>% mutate(year = 0)
+  }
+}
+
+# rename variables   
+shp_recode <- shp_codebook %>%
+  filter(category != "proc") %>%
+  group_by(category, name) %>% 
+  nest() %>%
+  ungroup() %>%
+  # filter(name != "yearBrth") %>%
+  mutate(data = map2(data, name, rename_fun))  
+
+# recode 
+recode_fun <- function(rule, y, year){
+  print(rule)
+  x <- y$value
+  if(!is.na(rule)){y$value <- eval(parse(text = rule))}
+  return(y)
+}
+
+shp_recode <- shp_recode %>% 
+  mutate(data = map(data, ~(.) %>% 
+    group_by(recode, year) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = pmap(list(recode, data, year), recode_fun)) %>%
+    unnest(data) %>%
+    mutate(value = ifelse(value < 0 | is.nan(value) | is.infinite(value), NA, value))))
+
+
+# reverse code 
+shp_recode <- shp_recode %>%
+  mutate(data = map(data, ~(.) %>%
+    mutate(value = ifelse(reverse_code == "no" | is.na(reverse_code), value, 
+                        reverse.code(-1, value, mini = mini, maxi = maxi)))))
+
+fun_call <- function(x, rule){
+    switch(rule,
+           average = mean(x, na.rm = T),
+           mode = Mode(x)[1],
+           sum = sum(x, na.rm = T),
+           skip = unique(x)[1],
+           select = unique(x)[1],
+           max = max(x, na.rm = T),
+           min = min(x, na.rm = T))
+  }
+```
+
+### Determine Baseline  
+
+```{r shp baseline}
+shp_waves <- shp_recode %>% 
+  filter(name == "lonely") %>%
+  unnest(data) %>%
+  filter(!is.na(value)) %>%
+  select(SID, name, year) %>%
+  distinct() %>%
+  group_by(SID) %>%
+  summarize(year = min(year)) %>%
+  ungroup() 
+```
+
+### Covariates  
+
+```{r shp matching, eval = T}
+# bring in year or birth for cleaning
+shp_cov <- shp_recode %>% 
+  filter(category == "covariates") %>% 
+  mutate(data = map(data, ~(.) %>% mutate(value = as.numeric(value)))) %>%
+  unnest(data) %>%
+  distinct() %>%
+  filter(!is.na(value)) %>%
+  group_by(category, name, year, SID, itemname, comp_rule, long_rule) %>%
+  summarize(value = max(value, na.rm = T)) %>%
+  ungroup()
+
+# compositing within years
+year_comp_fun <- function(df, rule){
+  df %>%
+    # group by person and item (collapse across age)
+    group_by(SID, long_rule, name, itemname, year) %>% 
+    summarize(value = max(value, na.rm = T)) %>%
+    group_by(SID, long_rule, name, year) %>% 
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup() %>% 
+    mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value))
+}
+
+shp_cov <- shp_cov %>%
+  filter(year <= max(shp_waves$year)) %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, year_comp_fun)) %>%
+  unnest(data) %>%
+  right_join(shp_waves %>% select(SID, p_year = year))
+
+comp_fun <- function(data, rule){
+  data %>%
+    group_by(SID, name, p_year) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+shp_cov <- shp_cov %>%
+  filter(!name %in% c("weight", "height", "smoke") & year <= p_year) %>%
+  group_by(long_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, long_rule, comp_fun)) %>%
+  unnest(data) %>%
+  mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value)) %>%
+  select(-long_rule) %>%
+  pivot_wider(names_from = name, values_from = value, values_fn = list(value = max)) %>%
+  full_join(
+    shp_cov %>%
+      group_by(SID) %>%
+      filter(name %in% c("weight", "height", "smoke")) %>%
+      group_by(SID, name) %>%
+      filter(year == min(year)) %>%
+      group_by(SID, name) %>%
+      summarize(value = max(value)) %>%
+      ungroup() %>%
+      pivot_wider(names_from = "name", values_from = "value") %>%
+      mutate(bmi = weight/((height/100)^2))
+  )
+```
+
+### Loneliness   
+```{r shp pers, eval = T}
+shp_pred <- shp_recode %>%
+  filter(category == "loneliness") %>%
+  unnest(data) %>%
+  right_join(shp_waves %>% select(SID, p_year = year)) %>%
+  filter(year >= p_year) %>%
+  filter(!is.na(value)) %>%
+  select(category, name, itemname, year, SID, value, comp_rule, long_rule) %>%
+  distinct()
+
+# alpha's
+shp_alpha <- shp_pred %>%
+  select(name, itemname, year, SID, value) %>%
+  group_by(name, year) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% pivot_wider(names_from = itemname, values_from = value)),
+         alpha = map(data, possibly(~psych::alpha((.) %>% select(-SID)), NA_real_)))
+
+
+comp_fun <- function(d, rule){
+  d %>%
+    group_by(SID, year, name) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+# create composites
+shp_pred <- shp_pred %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, comp_fun)) %>%
+  unnest(data) %>%
+  select(-comp_rule) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value")
+```
+
+### Combine Data  
+```{r combine shp}
+shp_comb <- shp_pred %>%
+  left_join(shp_cov %>% select(SID, yearBrth)) %>%
+  mutate(age = year - yearBrth - 60) %>% 
+  select(-yearBrth) %>%
+  filter(!is.na(lonely)) %>%
+  arrange(SID, year) %>%
+  group_by(SID) %>%
+  mutate(wave = year - min(year) + 1) %>%
+  ungroup() %>%
+  select(-year) %>%
+  pivot_wider(names_from = "wave"
+              , values_from = c("lonely", "age")
+              , names_glue = "{.value}{wave}") %>%
+  left_join(shp_cov %>% 
+              mutate(b.age.yrs = p_year - yearBrth
+                     , b.age = b.age.yrs - 60) %>% 
+              select(-p_year)) %>%
+  left_join(shp_pred %>% group_by(SID) %>% summarize(baseline.year = min(year), last.year = max(year))) %>%
+  left_join(shp_pred %>%
+              arrange(SID, year) %>%
+              group_by(SID) %>%
+              mutate(int = year - lag(year)) %>%
+              summarize(int = mean(int, na.rm = T))) %>%
+  left_join(shp_pred %>% group_by(SID) %>% summarize(meas.occ = n())) %>%
+  mutate(married = ifelse(marital == 1, 1, 0)
+         , divorced = ifelse(marital == 2, 1, 0)
+         , widowed = ifelse(marital == 3, 1, 0)
+         , never.married = ifelse(marital == 4, 1, 0)
+         , marital = mapvalues(marital, 1:4, LETTERS[1:4])) 
+shp_comb
+
+save(shp_pred, shp_cov, shp_comb
+     , file = sprintf("%s/01-data/clean/shp_clean.RData", wd))
+shp_mi <- shp_pred
+save(shp_mi
+     , file = sprintf("%s/01-data/clean/shp_mi.RData", wd))
+```
+
+```{r}
+rm(list = ls()[grepl("shp", ls())])
+```
+
+## BHPS    
+### Load Data  
+```{r bhps clean fun, eval = F}
+bhps_read_fun <- function(x){
+  keep <- c("pidp", sprintf("%shid", substr(x, 1, 1)))
+  df <- sprintf("%s/bhps/%s", data_path, x) %>% 
+    haven::read_sav(.) %>% 
+    select(one_of(keep), one_of(old.names))
+  if("pidp" %in% colnames(df)) colnames(df)[colnames(df) == "pidp"] <- "SID"
+  # else if(grepl("pno", colnames(df))) colnames(df)[colnames(df) == sprintf("%spno", substr(x, 1, 1))] <- "SID"
+  if(any(grepl("hid", colnames(df)))) colnames(df)[grepl("hid", colnames(df))] <- "HHID"
+  return(df)
+}
+```
+
+```{r bhps codebook}
+bhps_codebook <- (codebook %>% filter(study == "BHPS"))$codebook[[1]] %>%
+  mutate(orig_itemname = str_to_lower(orig_itemname))
+bhps_codebook
+```
+
+```{r bhps data, eval = F}
+bhps_xwaveid <- sprintf("%s/bhps/xwaveid.sav", data_path) %>% read_sav()
+
+old.names <- unique(bhps_codebook$orig_itemname)
+datasets <- sprintf("%s/bhps", data_path) %>% list.files(., pattern = ".sav")
+bhps <- tibble(datasets = datasets) %>%
+  mutate(data = map(datasets, bhps_read_fun),
+         ncol = map_dbl(data, ~length(colnames(.)[!colnames(.) %in% c("SID", "HHID")]))) %>%
+  filter(ncol >= 1)
+
+bhps <- reduce(bhps$data, full_join) %>% haven::zap_labels(.)
+save(bhps, file = sprintf("%s/01-data/clean/bhps_raw.RData", wd))
+
+bhps_long <- bhps %>% 
+  pivot_longer(names_to = "orig_itemname"
+               , values_to = "value"
+               , values_drop_na = T
+               , cols = c(-SID, -HHID)) %>%
+  distinct()
+
+rm(bhps)
+```
+
+### Recoding & Reverse Scoring  
+```{r bhps recode}
+# join data with recoding info 
+bhps_recode <- bhps_codebook %>%
+  filter(category %in% c("loneliness", "outcome", "covariates", "proc")) %>%
+  select(category, name, itemname, wave, year, orig_itemname, reverse_code:long_rule) %>%
+  filter(name != "SID") %>%
+  group_by(category, name) %>% 
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% left_join(bhps_long))) 
+
+bhps_ids <- bhps_recode %>% 
+  filter(category == "proc") %>%
+  unnest(data) %>%
+  select(name, year, SID, value) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value") %>%
+  group_by(SID) %>%
+  summarise_at(vars(dadID, momID), mode)
+
+# recode 
+recode_fun <- function(rule, y, year){
+  # print(rule)
+  x <- y$value
+  if(!is.na(rule)){y$value <- eval(parse(text = rule))}
+  return(y)
+}
+
+bhps_recode <- bhps_recode %>% 
+  filter(category != "proc") %>%
+  mutate(data = map(data, ~(.) %>% 
+    group_by(recode, year) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = pmap(list(recode, data, year), recode_fun)) %>%
+    unnest(data) %>%
+    mutate(value = ifelse(value < 0 | is.nan(value) | is.infinite(value), NA, value)) %>%
+    filter(!is.na(value))
+    ))
+
+
+# reverse code 
+bhps_recode <- bhps_recode %>%
+  mutate(data = map(data, ~(.) %>%
+    mutate(value = ifelse(reverse_code == "no" | is.na(reverse_code), value, 
+                        reverse.code(-1, value, mini = mini, maxi = maxi)))))
+
+fun_call <- function(x, rule){
+    switch(rule,
+           average = mean(x, na.rm = T),
+           mode = Mode(x)[1],
+           sum = sum(x, na.rm = T),
+           skip = unique(x)[1],
+           select = unique(x)[1],
+           max = max(x, na.rm = T),
+           min = min(x, na.rm = T))
+  }
+```
+
+### Determine Baseline  
+
+```{r bhps baseline}
+bhps_waves <- bhps_recode %>% 
+  filter(name == "lonely") %>%
+  unnest(data) %>%
+  select(SID, name, year) %>%
+  distinct() %>%
+  group_by(SID) %>%
+  summarize(year = min(year)) %>%
+  ungroup()
+```
+
+
+### Covariates  
+
+```{r bhps matching, eval = T}
+# bring in year or birth for cleaning
+bhps_cov <- bhps_recode %>% 
+  filter(category %in% c("covariates")) %>% 
+  mutate(data = map(data, ~(.) %>% mutate(value = as.numeric(value)))) %>%
+  unnest(data) %>%
+  distinct() %>%
+  right_join(bhps_waves %>% select(SID, p_year = year)) %>%
+  filter(!is.na(value)) %>%
+  group_by(SID, year, category, name, itemname, wave, comp_rule, long_rule, p_year) %>%
+  summarize(value = max(value, na.rm = T)) %>%
+  ungroup()
+
+# compositing within years
+year_comp_fun <- function(df, rule){
+  df %>%
+    distinct() %>%
+    # group by person and item (collapse across age)
+    group_by(SID, long_rule, name, itemname, year, p_year) %>% 
+    summarize(value = max(value, na.rm = T)) %>%
+    group_by(SID, long_rule, name, year, p_year) %>% 
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup() %>% 
+    mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value))
+}
+
+bhps_cov <- bhps_cov %>%
+  filter(year <= p_year & !is.na(value)) %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, year_comp_fun)) %>%
+  unnest(data)
+
+comp_fun <- function(data, rule){
+  data %>%
+    group_by(SID, name, p_year) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+bhps_cov <- bhps_cov %>%
+  filter(!name %in% c("drink", "height", "weight", "b.isolated", "education") & year <= p_year) %>%
+  group_by(long_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, long_rule, comp_fun)) %>%
+  unnest(data) %>%
+  mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value)) %>%
+  select(-long_rule) %>%
+  pivot_wider(names_from = name, values_from = value, values_fn = list(value = max)) %>%
+  mutate(yearBrth = ifelse(yearBrth < 1000, yearBrth + 1900, yearBrth)) %>%
+  left_join(
+    bhps_cov %>%
+      filter(name %in% c("drink", "b.isolated", "education")) %>%
+      group_by(SID, name) %>%
+      filter(year == min(year)) %>%
+      group_by(SID, name) %>%
+      summarize(value = max(value)) %>%
+      ungroup() %>%
+      pivot_wider(names_from = "name", values_from = "value")
+  ) %>%
+  left_join(
+    bhps_cov %>% 
+      filter(name %in% c("height", "weight")) %>% 
+      group_by(SID) %>% 
+      filter(year == min(year)) %>% 
+      group_by(SID, name) %>% 
+      summarize(value = sum(value, na.rm = T)) %>% 
+      pivot_wider(names_from = "name", values_from = "value") %>% 
+      ungroup()
+    )
+```
+
+### Loneliness Variables  
+```{r bhps pers, eval = T}
+bhps_pred <- bhps_recode %>%
+  filter(category %in% c("loneliness")) %>%
+  unnest(data) %>%
+  filter(!is.na(value)) %>%
+  select(category, name, itemname, year, SID, value, comp_rule, long_rule) %>%
+  distinct()
+
+# alpha's
+bhps_alpha <- bhps_pred %>%
+  select(name, itemname, year, SID, value) %>%
+  group_by(name, year) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% pivot_wider(names_from = itemname, values_from = value)),
+         alpha = map(data, possibly(~psych::alpha((.) %>% select(-SID)), NA_real_)))
+
+
+comp_fun <- function(d, rule){
+  d %>%
+    group_by(SID, year, name) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+# create composites
+bhps_pred <- bhps_pred %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, comp_fun)) %>%
+  unnest(data) %>%
+  select(-comp_rule) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value") %>%
+  group_by(SID) %>%
+  filter(n() >= 2) %>%
+  ungroup()
+```
+
+### Combine Data  
+```{r combine bhps}
+bhps_comb <- bhps_pred %>%
+  left_join(bhps_xwaveid %>% select(SID = pidp, yearBrth = doby)) %>%
+  mutate(age = year - yearBrth - 60) %>% 
+  filter(!is.na(lonely)) %>%
+  arrange(SID, year) %>%
+  group_by(SID) %>%
+  mutate(wave = year - min(year) + 1) %>%
+  ungroup() %>%
+  select(-year) %>%
+  pivot_wider(names_from = "wave"
+              , values_from = c("lonely", "age")
+              , names_glue = "{.value}{wave}") %>%
+  left_join(bhps_cov %>% select(-yearBrth) %>%
+        left_join(bhps_xwaveid %>% select(SID = pidp, yearBrth = doby)) %>%
+              mutate(b.age.yrs = p_year - yearBrth
+                     , b.age = b.age.yrs - 60) %>% 
+              select(-p_year)) %>%
+  left_join(bhps_pred %>% group_by(SID) %>% summarize(baseline.year = min(year), last.year = max(year))) %>%
+  left_join(bhps_pred %>%
+              arrange(SID, year) %>%
+              group_by(SID) %>%
+              mutate(int = year - lag(year)) %>%
+              summarize(int = mean(int, na.rm = T))) %>%
+  mutate(married = ifelse(marital == 1, 1, ifelse(is.na(marital), 0, 0))
+         , divorced = ifelse(marital == 2, 1, ifelse(is.na(marital), 0, 0))
+         , widowed = ifelse(marital == 3, 1, ifelse(is.na(marital), 0, 0))
+         , never.married = ifelse(marital == 4 | is.na(marital), 1, 0)
+         , functional = ifelse(is.na(functional), 0, functional)
+         , marital = mapvalues(marital, 1:4, LETTERS[1:4])
+         , marital = ifelse(is.na(marital), "D", marital)
+         , bmi = weight/((height)^2)
+         , educ = ifelse(is.na(educ), 12, educ))
+
+save(bhps_comb, bhps_cov, bhps_pred
+     , file = sprintf("%s/01-data/clean/bhps_clean.RData", wd))
+```
+
+```{r}
+rm(list = ls()[grepl("bhps", ls())])
+```
+
+## SATSA (NEEDS REDONE)  
+
+### Load Data  
+```{r satsa load fun} 
+loadRData <- function(fileName){
+#loads an RData file, and returns it
+    load(fileName)
+    get(ls()[ls() != "fileName"])
+}
+
+satsa_read_fun <- function(x){
+  prob_vars <- c("FHEART", "FPARKIN", "FSTROKE")
+  y <- sprintf("%s/satsa/%s", data_path, x) %>% loadRData(.) %>% 
+    select(SID = TWINNR, one_of(old.names)) %>%
+    as_tibble()
+  if(any(prob_vars %in% colnames(y))){
+    y <- y %>% mutate_at(vars(one_of(prob_vars)), ~as.numeric(as.character(.)))
+    }
+  return(y)
+}
+```
+
+```{r midus codebook}
+satsa_codebook <- (codebook %>% filter(study == "SATSA"))$codebook[[1]] %>%
+  mutate_at(vars(orig_itemname), str_to_upper)
+satsa_codebook
+```
+
+```{r satsa data, eval = F}
+old.names <- unique(satsa_codebook$orig_itemname) %>% str_to_upper
+datasets <- sprintf("%s/satsa", data_path) %>% list.files(., pattern = ".rda")
+satsa <- tibble(datasets = datasets) %>%
+  mutate(data = map(datasets, satsa_read_fun),
+         ncol = map_dbl(data, ncol)) %>%
+  filter(ncol != 0)
+
+satsa <- reduce(satsa$data, full_join) %>% haven::zap_labels(.)
+satsa <- satsa %>%
+  mutate_if(is.factor, ~as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", .))) 
+satsa_long <- satsa %>% 
+  gather(key = orig_itemname, value = value, -SID, na.rm = T)
+save(satsa, file = sprintf("%s/01-data/clean/satsa_raw.RData", wd))
+rm(satsa)
+```
+
+
+### Recoding & Reverse Scoring  
+```{r satsa recode}
+satsa_recode <- satsa_codebook %>%
+  select(category, name, itemname, year, orig_itemname, reverse_code:long_rule) %>%
+  filter(category %in% c("covariates", "loneliness")) %>%
+  group_by(category, name) %>%
+  nest() %>% 
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% left_join(satsa_long)))
+
+# recode 
+recode_fun <- function(rule, y, year){
+  x <- y$value
+  if(!is.na(rule)){y$value <- eval(parse(text = rule))}
+  return(y)
+}
+
+satsa_recode <- satsa_recode %>% 
+  mutate(data = map(data, ~(.) %>% 
+    group_by(recode, year) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = pmap(list(recode, data, year), recode_fun)) %>%
+    unnest(data) %>%
+    mutate(value = ifelse(value < 0 | is.nan(value) | is.infinite(value), NA, value)) %>%
+    filter(!is.na(value))))
+
+
+# reverse code 
+satsa_recode <- satsa_recode %>%
+  mutate(data = map(data, ~(.) %>%
+    mutate(value = ifelse(reverse_code == "no" | is.na(reverse_code), value, 
+                        reverse.code(-1, value, mini = mini, maxi = maxi)))))
+
+fun_call <- function(x, rule){
+    switch(rule,
+           average = mean(x, na.rm = T),
+           mode = Mode(x)[1],
+           sum = sum(x, na.rm = T),
+           skip = unique(x)[1],
+           select = unique(x)[1],
+           max = max(x, na.rm = T),
+           min = min(x, na.rm = T))
+  }
+```
+
+### Determine Baseline  
+
+```{r hilda baseline}
+satsa_waves <- satsa_recode %>% 
+  filter(name == "lonely") %>%
+  unnest(data) %>%
+  filter(!is.na(value)) %>%
+  select(SID, name, year) %>%
+  distinct() %>%
+  # filter(year >= 2006) %>%
+  group_by(SID) %>%
+  summarize(year = min(year)) %>%
+  ungroup() %>%
+  mutate(wave = 1)
+```
+
+### Covariates  
+
+```{r satsa cov, eval = T}
+# bring in year or birth for cleaning
+satsa_cov <- satsa_recode %>% 
+  filter(category %in% c("covariates")) %>% 
+  mutate(data = map(data, ~(.) %>% mutate(value = as.numeric(value)))) %>%
+  unnest(data) %>%
+  distinct() %>%
+  right_join(satsa_waves %>% select(SID, p_year = year)) %>%
+  filter(!is.na(value)) %>%
+  group_by(SID, year, category, name, itemname, comp_rule, long_rule, p_year) %>%
+  summarize(value = max(value, na.rm = T)) %>%
+  ungroup()
+
+# compositing within years
+year_comp_fun <- function(df, rule){
+  df %>%
+    distinct() %>%
+    # group by person and item (collapse across age)
+    group_by(SID, long_rule, name, itemname, year, p_year) %>% 
+    summarize(value = max(value, na.rm = T)) %>%
+    group_by(SID, long_rule, name, year, p_year) %>% 
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup() %>% 
+    mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value))
+}
+
+satsa_cov <- satsa_cov %>%
+  filter(year <= p_year & !is.na(value) & name != "cc") %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, year_comp_fun)) %>%
+  unnest(data)
+
+comp_fun <- function(data, rule){
+  data %>%
+    group_by(SID, name, p_year) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+satsa_cov <- satsa_cov %>%
+  mutate(year = ifelse(name %in% c("weight","height") & year == 2002, p_year, year)) %>%
+  group_by(long_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, long_rule, comp_fun)) %>%
+  unnest(data) %>%
+  mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value)) %>%
+  select(-long_rule) %>%
+  pivot_wider(names_from = name, values_from = value, values_fn = list(value = max)) %>%
+  mutate(bmi = weight/((height/100)^2)
+         , yearBrth = ifelse(yearBrth < 1000, yearBrth + 1000, yearBrth)) %>%
+  left_join(
+    satsa_recode %>%
+      filter(name == "cc") %>%
+      unnest(data) %>%
+      filter(!is.na(value)) %>%
+      group_by(name, itemname, SID) %>%
+      summarize(value = max(value, na.rm = T)) %>%
+      group_by(name, SID) %>%
+      summarize(value = sum(value, na.rm = T)) %>%
+      ungroup() %>%
+      pivot_wider(names_from = name, values_from = value)
+  ) 
+```
+
+### Loneliness   
+```{r satsa pers, eval = T}
+satsa_pred <- satsa_recode %>%
+  filter(category == "loneliness") %>%
+  unnest(data) %>%
+  right_join(satsa_waves %>% select(SID, p_year = year)) %>%
+  filter(year >= p_year) %>%
+  filter(!is.na(value)) %>%
+  select(category, name, itemname, year, SID, value, comp_rule, long_rule) %>%
+  distinct()
+
+# alpha's
+satsa_alpha <- satsa_pred %>%
+  select(name, itemname, year, SID, value) %>%
+  group_by(name, year) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% pivot_wider(names_from = itemname, values_from = value)),
+         alpha = map(data, possibly(~psych::alpha((.) %>% select(-SID)), NA_real_)))
+
+
+comp_fun <- function(d, rule){
+  d %>%
+    group_by(SID, year, name) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+# create composites
+satsa_pred <- satsa_pred %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, comp_fun)) %>%
+  unnest(data) %>%
+  select(-comp_rule) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value")
+```
+
+### Combine Data  
+```{r combine satsa}
+satsa_comb <- satsa_pred %>%
+  left_join(satsa_cov %>% select(SID, yearBrth)) %>%
+  mutate(age = year - yearBrth - 60) %>% 
+  select(-yearBrth) %>%
+  filter(!is.na(lonely)) %>%
+  arrange(SID, year) %>%
+  group_by(SID) %>%
+  mutate(wave = year - min(year) + 1) %>%
+  ungroup() %>%
+  select(-year) %>%
+  pivot_wider(names_from = "wave"
+              , values_from = c("lonely", "age")
+              , names_glue = "{.value}{wave}") %>%
+  left_join(satsa_cov %>% 
+              mutate(b.age.yrs = p_year - yearBrth
+                     , b.age = b.age.yrs - 60) %>% 
+              select(-p_year)) %>%
+  left_join(satsa_pred %>% group_by(SID) %>% summarize(baseline.year = min(year), last.year = max(year))) %>%
+  left_join(satsa_pred %>%
+              arrange(SID, year) %>%
+              group_by(SID) %>%
+              mutate(int = year - lag(year)) %>%
+              summarize(int = mean(int, na.rm = T))) %>%
+  left_join(satsa_pred %>% group_by(SID) %>% summarize(meas.occ = n())) %>%
+  mutate(marital = ifelse(married == 1, "A", ifelse(divorced == 1, "B", ifelse(widowed == 1, "C", "D")))
+         , bmi = ifelse(is.na(bmi), weight/((height)^2), bmi)) 
+satsa_comb
+
+save(satsa_pred, satsa_cov, satsa_comb
+     , file = sprintf("%s/01-data/clean/satsa_clean.RData", wd))
+satsa_mi <- satsa_pred
+save(satsa_mi
+     , file = sprintf("%s/01-data/clean/satsa_mi.RData", wd))
+```
+
+```{r}
+rm(list = ls()[grepl("satsa", ls())])
+```
+
+## OCTO (NEEDS REDONE)  
+
+```{r octo twin codebook}
+(octotwin_codebook <- (codebook %>% filter(study == "OCTO"))$codebook[[1]] %>%
+  mutate(orig_itemname = str_to_lower(orig_itemname)))
+```
+
+```{r octo twin data, eval = F}
+octotwin <- sprintf("%s/octo-twin/Emorie_Lonelieness.sav", data_path) %>% 
+  read_sav() %>%
+  haven::zap_labels(.)
+```
+
+### Recoding & Reverse Scoring  
+
+```{r octo twin match, eval = F}
+rename_fun <- function(cb, var){
+  old.names <- unique((octotwin_codebook %>% filter(name == var))$orig_itemname)
+  df <- octotwin %>% 
+    mutate(SID = paste0(v1, v2)) %>%
+    select(SID, one_of(old.names)) %>%
+    gather(key = orig_itemname, value = value, -SID, na.rm=T)
+  if(length(old.names) > 1){
+      df %>% left_join(cb %>% select(itemname, year, orig_itemname, reverse_code:long_rule))
+  } else {
+    df %>% left_join(cb %>% select(itemname, orig_itemname, reverse_code:long_rule) %>% distinct()) %>% mutate(year = "0")
+  }
+}
+
+`
+# join data with recoding info 
+octotwin_recode <- octotwin_codebook %>%
+  select(category, name, itemname, year, orig_itemname, reverse_code:long_rule) %>%
+  filter(category %in% c("pred", "covariates")) %>%
+  group_by(category, name) %>%
+  nest() %>% 
+  ungroup() %>%
+  mutate(data = map2(data, name, possibly(rename_fun, NA_real_)))
+
+# recode 
+recode_fun <- function(rule, y, year){
+  x <- y$value
+  if(!is.na(rule)){y$value <- eval(parse(text = rule))}
+  return(y)
+}
+
+octotwin_recode <- octotwin_recode %>% 
+  mutate(data = map(data, ~(.) %>% 
+    mutate(year = as.numeric(year)) %>%
+    group_by(recode, year) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = pmap(list(recode, data, year), recode_fun)) %>%
+    unnest(data) %>%
+    mutate(value = ifelse(value < 0 | is.nan(value) | is.infinite(value), NA, value))))
+
+
+# reverse code 
+octotwin_recode <- octotwin_recode %>%
+  mutate(data = map(data, ~(.) %>%
+    mutate(value = ifelse(reverse_code == "no" | is.na(reverse_code), value, 
+                        reverse.code(-1, value, mini = mini, maxi = maxi)))))
+
+fun_call <- function(x, rule){
+    switch(rule,
+           average = mean(x, na.rm = T),
+           mode = Mode(x)[1],
+           sum = sum(x, na.rm = T),
+           skip = unique(x)[1],
+           select = unique(x)[1],
+           max = max(x, na.rm = T),
+           min = min(x, na.rm = T))
+}
+```
+
+### Determine Baseline  
+
+```{r hilda baseline}
+octo_waves <- octotwin_recode %>% 
+  filter(name == "lonely") %>%
+  unnest(data) %>%
+  filter(!is.na(value)) %>%
+  select(SID, name, year) %>%
+  distinct() %>%
+  # filter(year >= 2006) %>%
+  group_by(SID) %>%
+  summarize(year = min(year)) %>%
+  ungroup() %>%
+  mutate(wave = 1)
+```
+
+### Covariates  
+
+```{r octotwin cov, eval = T}
+# bring in year or birth for cleaning
+octotwin_cov <- octotwin_recode %>% 
+  filter(category %in% c("covariates")) %>% 
+  mutate(data = map(data, ~(.) %>% mutate(value = as.numeric(value)))) %>%
+  unnest(data) %>%
+  distinct() %>%
+  right_join(octo_waves %>% select(SID, p_year = year)) %>%
+  filter(!is.na(value)) %>%
+  group_by(SID, year, category, name, itemname, comp_rule, long_rule, p_year) %>%
+  summarize(value = max(value, na.rm = T)) %>%
+  ungroup()
+
+# compositing within years
+year_comp_fun <- function(df, rule){
+  df %>%
+    distinct() %>%
+    # group by person and item (collapse across age)
+    group_by(SID, long_rule, name, itemname, year, p_year) %>% 
+    summarize(value = max(value, na.rm = T)) %>%
+    group_by(SID, long_rule, name, year, p_year) %>% 
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup() %>% 
+    mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value))
+}
+
+octotwin_cov <- octotwin_cov %>%
+  filter(year <= p_year & !is.na(value) & name != "cc") %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, year_comp_fun)) %>%
+  unnest(data)
+
+comp_fun <- function(data, rule){
+  data %>%
+    group_by(SID, name, p_year) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+octotwin_cov <- octotwin_cov %>%
+  group_by(long_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, long_rule, comp_fun)) %>%
+  unnest(data) %>%
+  mutate(value = ifelse(is.infinite(value) | is.nan(value), NA, value)) %>%
+  select(-long_rule) %>%
+  pivot_wider(names_from = name, values_from = value, values_fn = list(value = max)) %>%
+  mutate(bmi = weight/((height/100)^2)) %>%
+  left_join(
+    octotwin_recode %>%
+      filter(name == "cc") %>%
+      unnest(data) %>%
+      filter(!is.na(value)) %>%
+      group_by(name, itemname, SID) %>%
+      summarize(value = max(value, na.rm = T)) %>%
+      group_by(name, SID) %>%
+      summarize(value = sum(value, na.rm = T)) %>%
+      ungroup() %>%
+      pivot_wider(names_from = name, values_from = value)
+  ) 
+```
+
+### Loneliness   
+```{r octotwin pers, eval = T}
+octotwin_pred <- octotwin_recode %>%
+  filter(category == "pred") %>%
+  unnest(data) %>%
+  right_join(octo_waves %>% select(SID, p_year = year)) %>%
+  filter(year >= p_year) %>%
+  filter(!is.na(value)) %>%
+  select(category, name, itemname, year, SID, value, comp_rule, long_rule) %>%
+  distinct()
+
+# alpha's
+octotwin_alpha <- octotwin_pred %>%
+  select(name, itemname, year, SID, value) %>%
+  group_by(name, year) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map(data, ~(.) %>% pivot_wider(names_from = itemname, values_from = value)),
+         alpha = map(data, possibly(~psych::alpha((.) %>% select(-SID)), NA_real_)))
+
+
+comp_fun <- function(d, rule){
+  d %>%
+    group_by(SID, year, name) %>%
+    summarize(value = fun_call(value, rule)) %>%
+    ungroup()
+}
+
+# create composites
+octotwin_pred <- octotwin_pred %>%
+  group_by(comp_rule) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(data = map2(data, comp_rule, comp_fun)) %>%
+  unnest(data) %>%
+  select(-comp_rule) %>%
+  pivot_wider(names_from = "name"
+              , values_from = "value")
+```
+
+### Combine Data  
+```{r combine octotwin}
+octotwin_comb <- octotwin_pred %>%
+  left_join(
+    octotwin_recode %>%
+      filter(name == "age") %>%
+      unnest(data) %>%
+      select(age = value, year, SID)
+  ) %>%
+  mutate(age = age - 60) %>% 
+  filter(!is.na(lonely)) %>%
+  arrange(SID, year) %>%
+  group_by(SID) %>%
+  mutate(wave = year - min(year) + 1) %>%
+  ungroup() %>%
+  select(-year) %>%
+  pivot_wider(names_from = "wave"
+              , values_from = c("lonely", "age")
+              , names_glue = "{.value}{wave}") %>%
+  left_join(
+    octotwin_cov %>% 
+      select(-p_year) %>%
+      rename(b.age.yrs = age) %>%
+      mutate(b.age = b.age.yrs - 60)
+    ) %>%
+  left_join(octotwin_pred %>% group_by(SID) %>% summarize(baseline.year = min(year), last.year = max(year))) %>%
+  left_join(octotwin_pred %>%
+              arrange(SID, year) %>%
+              group_by(SID) %>%
+              mutate(int = year - lag(year)) %>%
+              summarize(int = mean(int, na.rm = T))) %>%
+  left_join(octotwin_pred %>% group_by(SID) %>% summarize(meas.occ = n())) %>%
+  mutate(marital = ifelse(married == 1, "A", ifelse(divorced == 1, "B", ifelse(widowed == 1, "C", "D")))
+         , bmi = ifelse(is.na(bmi), weight/((height)^2), bmi)) 
+octotwin_comb
+
+save(octotwin_pred, octotwin_cov, octotwin_comb
+     , file = sprintf("%s/01-data/clean/octotwin_clean.RData", wd))
+octotwin_mi <- octotwin_pred
+save(octotwin_mi
+     , file = sprintf("%s/01-data/clean/octotwin_mi.RData", wd))
+```
+
+```{r}
+rm(list = ls()[grepl("octo", ls())])
+```
+
