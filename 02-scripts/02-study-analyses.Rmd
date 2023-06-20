@@ -21,8 +21,8 @@ loadRData <- function(fileName, type){
 }
 
 nested_data <- tibble(
-  # study = c("LISS", "SHP", "GSOEP", "SATSA", "HILDA", "OCTOTWIN", "SHARE", "HRS", "ELSA")
-  study = c("SHP")
+  study = c("LISS", "SHP", "GSOEP", "SATSA", "HILDA", "OCTOTWIN", "SHARE", "HRS", "ELSA")
+  # study = c("SHP")
   , data = map(str_to_lower(study), ~loadRData(., "comb"))
   ) %>% mutate(
     data = map(data, ~(.) %>% 
@@ -44,7 +44,8 @@ std_vars <- c("b.isolated", "functional", "mstat", "episodic", "educ", "income",
 pomp <- function(x) (x - min(x, na.rm = T))/(max(x, na.rm = T) - min(x, na.rm = T))*10
 
 nested_data <- nested_data %>%
-  mutate(data = map(data, ~(.) %>%
+  mutate(unscaled_data = data
+         , data = map(data, ~(.) %>%
                       mutate_at(vars(one_of(std_vars)), ~as.numeric(scale(.))) %>%
                       mutate_at(vars(one_of(std_vars)), ~ifelse(is.nan(.), NA, .)) %>%
                       mutate_at(vars(contains("lonely")), pomp)))
@@ -78,7 +79,8 @@ long_fun <- function(d, study){
 }
 
 nested_data <- nested_data %>%
-  mutate(long_data = map2(data, study, long_fun), 
+  mutate(long_data = map2(data, study, long_fun),
+         unscaled_long_data = map2(unscaled_data, study, long_fun),
     meas.oc = map(long_data, ~(.) %>% 
                            group_by(SID) %>%
                            summarize(meas.occ = n()) %>%
@@ -109,6 +111,62 @@ desc_fun <- function(d, study){
 nested_data <- nested_data %>%
   mutate(desc = map2(data, study, desc_fun))
 ```
+
+## Zero-Order Correlations  
+```{r}
+cor_fun <- function(d, study){
+  other.vars = c("lonely", "b.age.yrs", "b.isolated", "functional", "sex"
+                 , "educ", "married", "divorced", "widowed", "never.married"
+                 , "income", "bmi", "cc", "depression", "smoke", "drink"
+                 , "episodic", "mstat", "baseline.year") 
+  db <- d %>% 
+    group_by(SID) %>%
+    filter(wave == min(wave)) %>%
+    ungroup() %>%
+    select(SID, one_of(other.vars))
+  
+  desc <- db %>%
+    pivot_longer(
+      cols = -SID
+      , values_to = "value"
+      , values_drop_na = T
+      , names_to = "v1"
+    ) %>%
+    group_by(v1) %>%
+    summarize_at(vars(value), lst(mean, sd)) %>%
+    ungroup() %>%
+    mutate_at(vars(mean, sd), ~sprintf("%.2f", .))
+  
+  r <- corr.test(db %>% select(-SID), use = "pairwise") 
+  r2 <- apply(r$r, c(1,2), function(x) sprintf("%.2f", x))
+  r2[which(r$p < .05, arr.ind = T)] <- sprintf("<strong>%s</strong>", r2[which(r$p < .05, arr.ind = T)])
+  
+  r2[upper.tri(r2)] <- ""
+  diag(r2) <- "--"
+  
+  r_df <- r2 %>%
+    data.frame() %>%
+    rownames_to_column("v1") %>%
+    # left_join(desc) %>%
+    mutate(v1 = paste(seq(1, n()), v1, sep = ". "))
+  
+  tab <- r_df %>%
+    kable(.
+          , "html"
+          , escape = F
+          , caption = sprintf("<strong>Table SX</strong><br><em>Zero-Order Correlations for Baseline Variables in %s", study) #and Descriptives
+          , col.names = c("Variable", 1:ncol(r2))#, "M", "SD")
+          , align = c("l", rep("c", ncol(r_df) - 1))
+          ) %>%
+    kable_classic(full_width = F, font_size = 12, html_font = "Times New Roman")
+  save_kable(tab, file = sprintf("%s/03-results/10-tables/zero-order-cors/%s.html", wd, study))
+  return(tab)
+}
+
+nested_data <- nested_data %>%
+  mutate(cors = map2(unscaled_long_data, study, cor_fun))
+```
+
 
 ```{r}
 fac_fun <- function(x){

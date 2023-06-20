@@ -56,13 +56,14 @@ desc_tab <- nested_desc %>%
         , longtable=T
         , col.names = c("Variable", "N Valid", "Mean", "SD", "Min", "Max", "Range")
         , caption = "Descriptive Statistics") %>%
-  kable_styling(full_width = F) %>% 
+  kable_classic(full_width = F, font_size = 12, html_font = "Times New Roman") %>%
   add_footnote("add necessary notes", notation="alphabet")
 
 for (i in 1:nrow(rs)) {
   desc_tab <- desc_tab %>% 
     kableExtra::group_rows(rs$study[i], rs$start[i], rs$end[i])
 }
+desc_tab
 ```
 
 ```{r}
@@ -164,7 +165,7 @@ man_desc_tab <- man_desc_tab %>%
         , booktabs = T
         , align = c("r", rep("c", 9))
         , caption = "Descriptive Statistics Across Studies") %>%
-  kable_styling(full_width = F); man_desc_tab
+  kable_classic(full_width = F, font_size = 12, html_font = "Times New Roman"); man_desc_tab
 save_kable(man_desc_tab, file = sprintf("%s/03-results/10-tables/study-desc-tab.html", wd))
 ```
 
@@ -277,7 +278,7 @@ stdy_tab_fun <- function(imp, mod, rand, int, cov, d){
           , align = c("r", rep("c", ncols))
           , caption = cap
           ) %>%
-    kable_styling(full_width = F, font_size = 12) %>%
+    kable_classic(full_width = F, font_size = 12, html_font = "Times New Roman") %>%
     add_header_above(hdr) %>%
     add_footnote("LL = Log Likelihood; Age = age (centered at 60).", notation="alphabet")
   for(i in 1:nrow(rs)){
@@ -482,7 +483,7 @@ meta_tab_fun <- function(imp, mod, rand, int, cov, d){
           , caption = cap
           , booktabs = T
           ) %>%
-    kable_styling(full_width = F) 
+    kable_classic(full_width = F, font_size = 12, html_font = "Times New Roman")
   save_kable(tab, file = sprintf("%s/03-results/10-tables/meta-tables/%s_%s_%s_%s_%s.html"
                                  , wd, imp, mod, rand, int, cov))
   return(tab)
@@ -559,7 +560,7 @@ meta_std_tab_fun <- function(imp, mod, rand, int, cov, d){
           , caption = cap
           , booktabs = T
           ) %>%
-    kable_styling(full_width = F) %>%
+    kable_classic(full_width = F, font_size = 12, html_font = "Times New Roman") %>%
     add_header_above(hdr)
   save_kable(tab, file = sprintf("%s/03-results/10-tables/meta-study-tables/%s_%s_%s_%s_%s.html"
                                  , wd, imp, mod, rand, int, cov))
@@ -622,7 +623,7 @@ nested_plots <- tibble(
   filter(!is.na(data)) %>%
   filter(study != "BHPS") %>%
   filter(!(study == "OCTOTWIN" & model == "Quadratic" & int == "Interaction")) %>%
-  filter(int == "b.age") %>%
+  # filter(int == "b.age") %>%
   unnest(data) 
 ```
 
@@ -652,12 +653,21 @@ traj_plot_fun <- function(mod, cov, imp, random, d){
       ) + ###Updated with real data
     labs(x = "Age in Years"
          , y = "Loneliness"
+         , color = "Sample"
          # , title = cap
          )  +
-    guides(color = guide_legend(override.aes = list(size = 0.5))) +
+    guides(color = guide_legend(override.aes = list(size = 0.5), nrow = 3)) +
     theme_classic() +
-    theme(legend.position = "bottom"
-          , plot.title = element_text(face = "bold", hjust = .5))
+    theme(
+      legend.position = "bottom"
+      , plot.title = element_text(face = "bold", hjust = .5)
+      , axis.text = element_text(face = "bold", color = "black", size = rel(1))
+      , axis.title = element_text(face = "bold", size = rel(1.1))
+      , legend.text = element_text(size = rel(1))
+      , legend.title = element_text(face = "bold", size = rel(1.1))
+      , strip.text = element_text(face = "bold", color = "white", size = rel(1.1))
+      , strip.background = element_rect(fill = "grey40", color = "black")
+      )
   ggsave(p, file = sprintf("%s/03-results/09-plots/01-trajectories/main/%s-%s-%s-%s.png", wd, imp, mod, random, cov)
          , width = 8, height = 6)
   ggsave(p, file = sprintf("%s/03-results/09-plots/01-trajectories/main/pdf/%s-%s-%s-%s.pdf", wd, imp, mod, random, cov)
@@ -705,7 +715,7 @@ int_plot_fun <- function(d, int, mod, cov, random, imp){
   cols <- (stdcolors %>% filter(studies %in% std))$colors
   if(int == "b.age"){
     d <- d %>%
-      filter((b.age == 15 & age > 0) | b.age == -15)
+      filter((b.age == 15 & age > 0) | (b.age == -15 & age < 1))
   }
   p <- d %>% 
     select(study, age, fit, int, n.group) %>%
@@ -730,17 +740,26 @@ int_plot_fun <- function(d, int, mod, cov, random, imp){
     scale_color_manual(values = cols) + 
     labs(x = "Age in Years"
          , y = "Loneliness"
-         , color = "Study"
+         , color = "Sample"
          # , title = cap
          )  +
     facet_wrap(~mod_value) + 
     theme_classic() + 
-    theme(legend.position = "bottom"
-          , plot.title = element_text(face = "bold", hjust = .5))
+    theme(
+      legend.position = "bottom"
+      , plot.title = element_text(face = "bold", hjust = .5)
+      , axis.text = element_text(face = "bold", color = "black", size = rel(1))
+      , axis.title = element_text(face = "bold", size = rel(1.1))
+      , legend.text = element_text(size = rel(1))
+      , legend.title = element_text(face = "bold", size = rel(1.1))
+      , strip.text = element_text(face = "bold", color = "white", size = rel(1.1))
+      , strip.background = element_rect(fill = "grey40", color = "black")
+      )
   ggsave(p, file = sprintf("%s/03-results/09-plots/01-trajectories/%s/%s-%s-%s-%s.png", wd, int, imp, mod, random, cov)
          , width = 8, height = ht)
   ggsave(p, file = sprintf("%s/03-results/09-plots/01-trajectories/%s/pdf/%s-%s-%s-%s.pdf", wd, int, imp, mod, random, cov)
          , width = 8, height = ht)
+  return(p)
 }
 
 int_traj_plots <- nested_plots %>% 
@@ -753,12 +772,12 @@ int_traj_plots <- crossing(
   int_traj_plots
   , term = c("b.isolated", "marital", "sex", "functional", "educ", "b.age") 
   ) %>%
+  # filter(term == "b.age") %>%
   mutate(p = pmap(list(data, term, model, cov, random, Imputed), int_plot_fun))
 ```
 
 ### Forest Plots  
 
-Add N & heterogeneity estiamtes. Add titles
 ```{r}
 f_plot_fun <- function(d, trm, imp, mod, random, int, cov, I2, Q, p, df){
   # print(trm, imp, mod, random, int, cov)
@@ -773,15 +792,15 @@ f_plot_fun <- function(d, trm, imp, mod, random, int, cov, I2, Q, p, df){
   lab <- str_remove(round(c(0-ef-(ef/5), 0, ef+(ef/5)),2), "^0")
   d <- d %>% full_join(tibble(study = " ", estimate = NA, n.group = NA))
   d <- d %>% arrange(estimate)
-  stds <- d$study[!d$study %in% c("meta", " ")]
+  stds <- d$study[!d$study %in% c("Meta-Analytic", " ")]
   d <- d %>%
-    mutate(study = factor(study, rev(c(" ", stds, "meta")))
+    mutate(study = factor(study, rev(c(" ", stds, "Meta-Analytic")))
            , lb = ifelse(lower < lim[1], "lower"
                          , ifelse(upper > lim[2], "upper", "neither"))
            , lower2 = ifelse(lower < lim[1], lim[1], lower)
            , upper2 = ifelse(upper > lim[2], lim[2], upper))
   p1 <- d %>%
-    mutate(meta = ifelse(study == "meta", "meta", "study")) %>%
+    mutate(meta = ifelse(study == "Meta-Analytic", "Meta-Analytic", "study")) %>%
     ggplot(aes(x = study, y = estimate)) + 
       geom_errorbar(aes(ymin = lower, ymax = upper)
                     , position = "dodge"
@@ -828,8 +847,8 @@ f_plot_fun <- function(d, trm, imp, mod, random, int, cov, I2, Q, p, df){
       geom_text(aes(label = value), hjust = .5, size = 3.5) + 
     
       # geom_text(aes(label = n.group), hjust = 1) +
-      annotate("text", label = "b [CI]", x = length(stds) + 1.75, y = "est", hjust = .5, vjust = 0) +
-      annotate("text", label = "N", x = length(stds) + 1.75, y = "n.group", hjust = .5, vjust = 0) +
+      annotate("text", label = "b [CI]", x = length(stds) + 1.75, y = "est", hjust = .5, vjust = 0, fontface = "bold") +
+      annotate("text", label = "N", x = length(stds) + 1.75, y = "n.group", hjust = .5, vjust = 0, fontface = "bold") +
       # geom_text(aes(label = "N", x = length(stds) + 2), hjust = 1) +
       geom_vline(aes(xintercept = 1.5)) +
       geom_vline(aes(xintercept = length(stds) + 1.5)) +
@@ -841,28 +860,28 @@ f_plot_fun <- function(d, trm, imp, mod, random, int, cov, I2, Q, p, df){
             , axis.ticks = element_blank()
             , axis.title = element_blank())
   
+  # setup title text
   my_theme <- function(...) {
     theme_classic() + 
-      theme(plot.title = element_text(face = "bold"))
+      theme(plot.title = element_text(face = "bold", hjust = .5)
+            , plot.subtitle = element_text(face = "italic", hjust = .5))
   }
   if(grepl("Age\\^2", trm2)) {
     trm2 <- str_remove_all(trm2, "Age\\^2")
     trm2 <- substitute(paste(Age^2, trm2))
   }
   title_theme <- calc_element("plot.title", my_theme())
-  ttl <- ggdraw() + 
+  ttl <- ggdraw() +
       draw_label(
           trm2,
           fontfamily = title_theme$family,
           fontface = title_theme$face,
           size = title_theme$size
       )
-  my_theme <- function(...) {
-    theme_classic() + 
-      theme(plot.subtitle = element_text(hjust = 0))
-  }
+  
+  # setup subtitle text
   subtitle_theme <- calc_element("subplot.title", my_theme())
-  subttl <- ggdraw() + 
+  subttl <- ggdraw() +
       draw_label(
           substitute(
                paste("RE Model (Q = ", Q1, ", df = ", df1, ", p = ", p1, ", ", I^2, " = ", I21, ")")
@@ -871,12 +890,11 @@ f_plot_fun <- function(d, trm, imp, mod, random, int, cov, I2, Q, p, df){
           fontface = subtitle_theme$face,
           size = subtitle_theme$size
       )
-
-  p3 <- cowplot::plot_grid(p1, p2
-                     , rel_widths = c(.4, .6)
-                     , axis = "tblr"
-                     , align = "hv"
-                     )
+  
+  # piece the plots together
+  p3 <- p1 + p2 + plot_layout(widths = c(4,6))
+  
+  # add the title and subtitle
   p <- cowplot::plot_grid(ttl, subttl, p3, rel_heights = c(.1, .05, .85), nrow = 3)
   ggsave(p, file = sprintf("%s/03-results/09-plots/02-forest-plots/%s-%s-%s-%s-%s-%s.pdf", 
                            wd, trm, imp, mod, random, int, cov)
@@ -899,7 +917,7 @@ fplot_nested <- nested_res %>%
     nested_meta %>%
       mutate(tidy = map(m, ~tidy(.) %>% 
                           select(-type, -term) %>%
-                          mutate(study = "meta"))
+                          mutate(study = "Meta-Analytic"))
              ) %>%
       select(-data) %>%
       unnest(tidy)
@@ -907,6 +925,7 @@ fplot_nested <- nested_res %>%
   mutate(lower = estimate - 1.96*std.error
          , upper = estimate + 1.96*std.error) %>%
   group_by(Imputed, model, random, int, cov, term) %>%
+  mutate(n.group = ifelse(study == "Meta-Analytic", sum(n.group, na.rm = T), n.group)) %>%
   nest() %>%
   ungroup() %>%
   full_join(
@@ -918,28 +937,35 @@ fplot_nested <- nested_res %>%
              ) %>%
       select(-data, -m)) %>%
   mutate(p = pmap(list(data, term, Imputed, model, random, int, cov, I2, Q, p, df), f_plot_fun))
-
-
 ```
 
+#### Panels by Model  
 ```{r}
 fp_group_plot_fun <- function(d, imp, mod, rand, int, cov){
-  cowplot::plot_grid(
-    d$p[[1]]    , d$p[[2]]
-    , d$p[[3]]  , d$p[[6]]
-    , d$p[[4]]  , d$p[[7]]
-    , d$p[[5]]  , d$p[[8]]
-    , nrow = 4
-    , ncol = 2
-  )
-  ggsave(file = sprintf("%s/03-results/09-plots/03-forest-plot-panels/%s-%s-%s-%s-%s.png"
+  
+  ttl <- if(int == "Interaction") sprintf("%s Change in Loneliness", mod) else "Loneliness Levels"
+  ttl <- sprintf("Forest Plots of Predictors of %s", ttl)
+  
+  my_theme <- function(...) theme_classic() + theme(plot.title = element_text(face = "bold", hjust = .5))
+  
+  p <- (d$p[[1]] + d$p[[2]]) / 
+    (d$p[[3]] + d$p[[6]]) /
+    (d$p[[4]] + d$p[[7]]) / 
+    (d$p[[5]] + d$p[[8]]) + 
+    plot_annotation(
+      title = ttl
+      , theme = my_theme()
+    )
+  
+  ggsave(p, file = sprintf("%s/03-results/09-plots/03-forest-plot-panels/%s-%s-%s-%s-%s.png"
                         , wd, imp, mod, rand, int, cov)
          , width = 11.5
          , height = 14)
-  ggsave(file = sprintf("%s/03-results/09-plots/03-forest-plot-panels/%s-%s-%s-%s-%s.pdf"
+  ggsave(p, file = sprintf("%s/03-results/09-plots/03-forest-plot-panels/%s-%s-%s-%s-%s.pdf"
                         , wd, imp, mod, rand, int, cov)
          , width = 11.5
          , height = 14)
+  return(p)
 }
 
 fplot_nested_gr <- fplot_nested %>% 
@@ -953,6 +979,122 @@ fplot_nested_gr <- fplot_nested %>%
   ungroup() %>%
   mutate(p = pmap(list(data, Imputed, model, random, int, cov), fp_group_plot_fun))
 ```
+
+#### Forest Plot + Simple Slopes Panels  
+
+```{r}
+fplot_int_panel_fun <- function(fp, p, imp, mod, rand, int, cov, term){
+  # setup term names for title
+  trm <- if(int == "Interaction"){
+    if(mod == "Linear") "Age" else "Age\\^2"
+  } else {
+    "Baseline Age"
+  }
+  # change to prettified names
+  term2 <- mapvalues(term, terms$old, terms$new, warn_missing = F)
+  # create the title
+  ttl <- sprintf("Forest Plots and Simple Effects of the %s x %s Interaction", trm, term2)
+  # format special characters
+  if(grepl("Age\\^2", ttl)) {
+    ttl <- str_remove_all(ttl, "Age\\^2")
+    ttl <- substitute(paste(Age^2, ttl))
+  }
+  # setup title and themes
+  my_theme <- function(...) {
+    theme_classic() + 
+      theme(plot.title = element_text(face = "bold"))
+  }
+  title_theme <- calc_element("plot.title", my_theme())
+  ttl <- ggdraw() + 
+      draw_label(
+          ttl,
+          fontfamily = title_theme$family,
+          fontface = title_theme$face,
+          size = title_theme$size
+      )
+  # generate plots differently for multilevel factors (marital)
+  # v. continuous or binary factors
+  if(term == "marital"){
+    p1 <- (fp$p[[1]] / fp$p[[2]] / fp$p[[3]]) 
+    p2 <- plot_grid(p1, p, nrow = 1)
+    wdt <- 12; ht <- 10
+  } else {
+    p2 <- fp$p[[1]] + p
+    wdt <- 12; ht <- 6
+  }
+  # piece together and save
+  p <- cowplot::plot_grid(ttl, p2, rel_heights = c(.1, .9), nrow = 2)
+  ggsave(p
+         , file = sprintf("%s/03-results/09-plots/05-forest-plot-int-panels/%s-%s-%s-%s-%s-%s.png", wd, imp, mod, rand, int, cov, term)
+         , width = wdt
+         , height = ht)
+  ggsave(p
+         , file = sprintf("%s/03-results/09-plots/05-forest-plot-int-panels/%s-%s-%s-%s-%s-%s.pdf", wd, imp, mod, rand, int, cov, term)
+         , width = wdt
+         , height = ht)
+}
+
+fplot_int_panels <- fplot_nested %>%
+  separate(term, c("scrap", "term"), sep = ":") %>%
+  mutate(term = ifelse(is.na(term), scrap, term)) %>%
+  select(Imputed:cov, term, p) %>%
+  mutate(group = mapvalues(term, mod_vals$old, mod_vals$group)) %>%
+  group_by(Imputed, model, random, int, cov, group) %>%
+  nest() %>%
+  ungroup() %>%
+  rename(term = group) %>%
+  right_join(int_traj_plots %>% select(-data)) %>%
+  mutate(pp = pmap(list(data, p, Imputed, model, random, int, cov, term), fplot_int_panel_fun))
+```
+
+```{r}
+fplot_me_panel_fun <- function(fp, p, imp, mod, rand, int, cov, term){
+  # setup term names for title
+  # change to prettified names
+  # term2 <- mapvalues(term, terms$old, terms$new, warn_missing = F)
+  # create the title
+  ttl <- sprintf("%s Change in Loneliness Across the Lifespan", mod)
+  subttl <- "Forest Plot and Trajectories"
+  my_theme <- function(...) {
+    theme_classic() + 
+      theme(plot.title = element_text(face = "bold", hjust = .5)
+            , plot.subtitle = element_text(face = "italic", hjust = .5))
+  }
+  # v. continuous or binary factors
+  p <- fp + p + 
+    plot_layout(widths = c(5.5,4.5)) + 
+    plot_annotation(
+      title = ttl
+      , subtitle = subttl
+      , theme = my_theme()
+      , tag_levels = "A"
+    )
+  # piece together and save
+  # p <- cowplot::plot_grid(ttl, p2, rel_heights = c(.1, .9), nrow = 2)
+  ggsave(p
+         , file = sprintf("%s/03-results/09-plots/05-forest-plot-int-panels/%s-%s-%s-%s-%s-%s.png", wd, imp, mod, rand, int, cov, term)
+         , width = 11
+         , height = 6)
+  ggsave(p
+         , file = sprintf("%s/03-results/09-plots/05-forest-plot-int-panels/%s-%s-%s-%s-%s-%s.pdf", wd, imp, mod, rand, int, cov, term)
+         , width = 11
+         , height = 6)
+}
+
+fplot_nested %>% 
+  filter(
+    int == "Main" 
+    & term %in% c("age", "age2") 
+    & !(model == "Quadratic" & term == "age")
+    ) %>%
+  select(Imputed:term, fp = p) %>%
+  left_join(
+    me_traj_plots %>% select(-data) 
+  ) %>%
+  mutate(pp = pmap(list(fp, p, Imputed, model, random, int, cov, term), fplot_me_panel_fun))
+```
+
+
 
 ### Baseline Age Simple Slopes  
 

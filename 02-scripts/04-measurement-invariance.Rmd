@@ -108,9 +108,7 @@ save(minv_nested_3, file = sprintf("%s/03-results/12-meas-inv/meas_inv_small.RDa
 ```
 
 ```{r}
-load(sprintf("%s/results/meas_inv_small.RData", local_path))
-comb <- paste(rep(traits$old, each = 3),
-              rep(c("cfi", "rmsea", "srmr"), times = 4), sep = ".") 
+load(sprintf("%s/03-results/12-meas-inv/meas_inv_small.RData", wd))
 
 tab <- minv_nested_3 %>% 
   select(study, res) %>%

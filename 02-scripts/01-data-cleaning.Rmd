@@ -23,6 +23,7 @@ library(readxl)      # read excel files
 library(haven)       # read spss files
 library(lme4)        # Frequentist MLM
 library(cowplot)
+library(patchwork)
 library(semTools)
 library(broom.mixed) # summaries of models
 library(metafor)     # meta analysis
