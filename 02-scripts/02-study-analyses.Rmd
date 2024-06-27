@@ -22,7 +22,7 @@ loadRData <- function(fileName, type){
 
 nested_data <- tibble(
   study = c("LISS", "SHP", "GSOEP", "SATSA", "HILDA", "OCTOTWIN", "SHARE", "HRS", "ELSA")
-  # study = c("SHP")
+  # study = c("SHARE")
   , data = map(str_to_lower(study), ~loadRData(., "comb"))
   ) %>% mutate(
     data = map(data, ~(.) %>% 
@@ -66,14 +66,6 @@ long_fun <- function(d, study){
   d <- d %>% 
     mutate(age2 = age * age)
   
-  # change these back to numeric
-  # d <- d %>%
-  #   mutate(
-  #     drink = as.numeric(as.character(drink)),
-  #     smoke = as.numeric(as.character(smoke)),
-  #     depression = as.numeric(as.character(depression)),
-  #     cc = as.numeric(as.character(cc))
-  #     )
   cat(study, "data have been reshaped into long-form. \n")
   return(d)
 }
@@ -85,7 +77,16 @@ nested_data <- nested_data %>%
                            group_by(SID) %>%
                            summarize(meas.occ = n()) %>%
                            ungroup()),
-    data = map2(data, meas.oc, ~(.x) %>% left_join(.y))
+    measoccint = map(long_data, ~(.) %>% 
+                             select(SID, age, lonely) %>%
+                             drop_na() %>%
+                             arrange(SID, age) %>%
+                             group_by(SID) %>%
+                             mutate(diff = (age - lag(age))*10) %>%
+                             filter(!is.na(diff)) %>%
+                             summarize(measoccint = mean(diff)) %>%
+                             ungroup()),
+    data = pmap(list(data, meas.oc, measoccint), ~(..1) %>% left_join(..2) %>% left_join(..3))
     )
 ```
 
@@ -97,7 +98,7 @@ desc_fun <- function(d, study){
   other.vars = c("b.isolated", "b.age.yrs", "functional", "sex", "educ", "married"
                  , "divorced", "widowed", "never.married", "income", "bmi", "cc"
                  , "depression", "smoke", "drink", "marital", "episodic", "mstat"
-                 , "baseline.year", "last.year", "int", "meas.occ") 
+                 , "baseline.year", "last.year", "int", "meas.occ", "measoccint") 
   
   descriptives <- d %>%
     select(one_of(other.vars), contains("lonely")) %>%
@@ -168,6 +169,117 @@ nested_data <- nested_data %>%
 ```
 
 
+## Cross-Sectional Age Differences 
+
+```{r}
+stdcolors <- tibble(studies = c("HRS", "SHARE", "ELSA", "SATSA", "OCTOTWIN", "GSOEP", "LISS", "HILDA", "SHP")
+       , colors = c("#332288", "#88ccee", "#44aa99", "#117733", "#999933", "#ddcc77", "#cc6677", "#882255", "#aa4499"))
+
+stdcolors$colors
+
+nested_data %>%
+  select(study, long_data) %>%
+  unnest(long_data) %>%
+  filter(!is.na(lonely)) %>%
+  group_by(study, SID) %>%
+  slice_min(age) %>%
+  ungroup() %>%
+  mutate(age = round(age)) %>%
+  group_by(study, age) %>%
+  summarize_at(vars(lonely), lst(mean, sd, n = ~sum(!is.na(.))), na.rm = T) %>%
+  ungroup() %>%
+  mutate(age = age*10+60
+         , se = sd / sqrt(n)
+         , lower = mean - se*1.96
+         , upper = mean + se*1.96
+         , study = factor(study, levels = stdcolors$studies)
+         ) %>%
+  filter(n > 10 & lower >= 0) %>%
+  ggplot(aes(x = age, y = mean, ymin = lower, ymax = upper)) + 
+    geom_ribbon(aes(fill = study), alpha = .2) + 
+    geom_line(aes(y = upper, color = study)) + 
+    geom_line(aes(y = lower, color = study)) + 
+    geom_line() + 
+    labs(
+      x = "Age"
+      , y = "Population Average Loneliness (CI)"
+      , title = "Cross Sectional Age Differences in Loneliness"
+      ) + 
+    scale_fill_manual(values = stdcolors$colors)+
+    scale_color_manual(values = stdcolors$colors)+
+    facet_wrap(~study) + 
+    theme_classic() + 
+    theme(
+      panel.grid.major = element_line()
+      , legend.position = "none"
+      , strip.text = element_text(face = "bold", color = "white", size = rel(1.1))
+      , strip.background = element_rect(fill = "grey40", color = "black")
+      , plot.title = element_text(face = "bold", hjust = .5)
+      , axis.text = element_text(face = "bold", color = "black", size = rel(1))
+      , axis.title = element_text(face = "bold", size = rel(1.1))
+    )
+ggsave(file = sprintf("%s/03-results/09-plots/cross-sectional-age-differences-cut.png", wd)
+       , width = 12, height = 12)
+```
+
+```{r}
+gam_fun <- function(d){
+  d <- d %>%
+    select(SID, age, lonely) %>% 
+    drop_na() %>%
+    group_by(SID) %>%
+    filter(n() > 2) %>%
+    ungroup() %>%
+    mutate(SID = factor(SID))
+  m <- mgcv::bam(
+    lonely ~ s(age) + s(age, by = SID)
+    , method = "REML"
+    , data = d
+    , nthreads = 12
+    )
+}
+nested_data %>%
+  select(study, long_data) 
+
+p <- nested_data %>%
+  select(study, long_data) %>%
+  unnest(long_data) %>%
+  filter(!is.na(lonely)) %>%
+  select(study, SID, age, lonely) %>%
+  mutate(age2 = round(age)) %>%
+  group_by(study, age2) %>%
+  mutate_at(vars(lonely), lst(n = ~sum(!is.na(.))), na.rm = T) %>%
+  ungroup() %>%
+  filter(study == "OCTO" | n > 20) %>%
+  mutate(age = age*10 + 60, 
+         study = factor(study, levels = stdcolors$studies)) %>%
+  ggplot(aes(x = age, y = lonely, group = study)) + 
+    geom_smooth(aes(color = study), method = "gam") + 
+    facet_wrap(~study) + 
+    labs(
+      x = "Age"
+      , y = "Loneliness (SE)"
+      , title = "Age Differences in Loneliness"
+      , subtitle = "Estimated using a generalized additive model (GAM)"
+      ) + 
+    theme_classic() + 
+    theme(
+      panel.grid.major = element_line()
+      , legend.position = "none"
+      , strip.text = element_text(face = "bold", color = "white", size = rel(1.1))
+      , strip.background = element_rect(fill = "grey40", color = "black")
+      , plot.title = element_text(face = "bold", hjust = .5)
+      , plot.subtitle = element_text(face = "italic", hjust = .5)
+      , axis.text = element_text(face = "bold", color = "black", size = rel(1))
+      , axis.title = element_text(face = "bold", size = rel(1.1))
+    )
+ggsave(p, file = sprintf("%s/03-results/09-plots/gam-age-differences.png", wd)
+       , width = 12, height = 12)
+```
+
+
+
+
 ```{r}
 fac_fun <- function(x){
   cols <- colnames(x)[colnames(x) %in% c("drink", "smoke", "depression", "cc")]
@@ -186,7 +298,8 @@ mice_call <- function(d, study){
   print(study)
   #do not include these variables as predictors to generate imputed values (we are not including time, outcome, or main effects in the imputation)
   noimp <- c("b.isolated","sex","marital","b.age","functional","educ",
-            "married","divorced","widowed","never.married","b.age.yrs")
+            "married","divorced","widowed","never.married","b.age.yrs", 
+            "last.year", "int", "meas.occ", "measoccint")
   sids <- d$SID
   d <- d %>% mutate_if(is.numeric, ~ifelse(is.nan(.) | is.infinite(.), NA, .))
   d2 <- d %>%
@@ -242,7 +355,7 @@ mice_call <- function(d, study){
 
 nested_data <- nested_data %>%
   # filter(!study %in% c("HILDA", "LISS", "GSOEP")) %>%
-  mutate(imp = map2(data, study, mice_call)) %>%
+  mutate(imp = map2(data, study, possibly(mice_call, NA_real_))) %>%
   filter(!is.na(imp))
 ```
 
@@ -281,7 +394,6 @@ nested_data %>%
 #### Model Call  
 ```{r}
 lmer_call <- function(d, f){
-  # if(grepl("age2", f)) d <- d %>% group_by(SID) %>% filter(n() > 3) %>% ungroup()
   lonely.intercept <- lmer(formula(f)
                            , data = d
                            , REML=F
@@ -295,10 +407,10 @@ lmer_call <- function(d, f){
 ```{r}
 pred_fun <- function(m, int, mod, cov){
   if(mod == "unconditional") return(NA)
-  # 
-  std_int <- c("b.isolated", "functional", "mstat", "episodic", "educ")
+  
+  std_int <- c("b.isolated", "functional", "mstat", "episodic", "educ", "bmi", "income")
   std_int <- std_int[std_int %in% colnames(m@frame)]
-  fac_int <- c("sex", "marital")
+  fac_int <- c("sex", "marital", "smoke", "drink", "cc", "depression")
   
   dsc <- describe(m@frame, fast = T) %>% as.data.frame()
   frame <- tibble(age = seq(dsc["age", "min"], dsc["age", "max"], length.out = 50)
@@ -307,9 +419,9 @@ pred_fun <- function(m, int, mod, cov){
   if(mod == "Quadratic"){
     frame <- frame %>% mutate(age2 = age^2)
   }
-  
+  std_int <- std_int[std_int %in% names(m@frame)]
   # deal with interaction terms
-  if(int == "Interaction"){
+  if(grepl("Interaction", int)){
     # add in standardized vars
     for (i in 1:length(std_int)) {
       frame <- crossing(frame, X = c(-1,1)); colnames(frame)[ncol(frame)] <- std_int[i]
@@ -321,6 +433,16 @@ pred_fun <- function(m, int, mod, cov){
         , sex = c(0, 1)
       )
   } 
+  
+  if(int == "AllInteraction"){
+    frame <- crossing(
+      frame
+      , smoke = c(0, 1)
+      , drink = c(0, 1)
+      , cc = c(0, 1)
+      , depression = c(0, 1)
+    )
+  }
   
   if(int == "b.age"){
     # add in standardized vars
@@ -352,16 +474,34 @@ pred_fun <- function(m, int, mod, cov){
     }
   }
   
-  # get model based predictions
-  m <- frame %>%
+  pred_int_fun <- function(df, age){
+    pred <- df %>%
+      mutate(age = age) %>%
     bind_cols(
       .
       , predictInterval(
         merMod = m
         , newdata = .
+        , n.sims = 500
         , include.resid.var = F
       )) %>%
-    mutate(fit = predict(m, newdata = ., allow.new.levels = T))
+    mutate(fit = predict(m, newdata = ., re.form = NA, allow.new.levels = T)) %>%
+      select(-age)
+    return(pred)
+  }
+  
+  # get model based predictions
+  frame <- frame %>%
+  
+    bind_cols(
+      .
+      , predictInterval(
+        merMod = m
+        , newdata = .
+        , .parallel = T
+        , include.resid.var = F
+      )) %>%
+    mutate(fit = predict(m, newdata = ., re.form = NA, allow.new.levels = T))
   return(frame)
 }
 ```
@@ -532,18 +672,22 @@ lmer_imp_fun <- function(dl, study){
   # set up terms and formulas
   mes <- c("b.isolated", "sex", "marital", "b.age", "functional", "educ", "income"
            , "drink", "smoke", "bmi", "cc", "depression", "episodic", "mstat")
-  mes <- mes[mes %in% colnames(dl[[1]])]
-  mint <-  paste("age", c("b.isolated", "sex", "marital", "b.age", "functional", "educ"), sep = "*")
-  mint2 <-  paste("b.age", mes[mes!= "b.age"], sep = "*")
-  mintq <- str_replace_all(mint, "[*]", "2*")
-  mintq2 <-  paste("b.age", mes[mes!= "b.age"], sep = "*")
+  mes         <- mes[mes %in% colnames(dl[[1]])]
+  mint        <- paste("age", c("b.isolated", "sex", "marital", "b.age", "functional", "educ"), sep = "*")
+  allmint     <- paste("age", mes, sep = "*")
+  mint2       <- paste("b.age", mes[mes!= "b.age"], sep = "*")
+  mintq       <- str_replace_all(mint, "[*]", "2*")
+  allmintq    <- str_replace_all(allmint, "[*]", "2*")
+  mintq2      <- paste("b.age", mes[mes!= "b.age"], sep = "*")
   # formulas
-  flin <- paste0("lonely ~ ", paste0(c("age", mes), collapse = " + "), " + (1 + age | SID)")
-  fquad <- paste0("lonely ~ ", paste0(c("age", "age2", mes), collapse = " + "), " + (1 + age + age2 | SID)")
-  fint <- paste0("lonely ~ ", paste0(c("age", mes, mint), collapse = " + "), " + (1 + age | SID)")
-  fquadint <- paste0("lonely ~ ", paste0(c("age", mes, mint, mintq), collapse = " + "), " + (1 + age + age2 | SID)")
-  fint2 <- paste0("lonely ~ ", paste0(c("age", mint2), collapse = " + "), " + (1 + age | SID)")
-  fquadint2 <- paste0("lonely ~ ", paste0(c("age", "age2", mintq2), collapse = " + "), " + (1 + age + age2 | SID)")
+  flin        <- paste0("lonely ~ ", paste0(c("age", mes)              , collapse = " + "), " + (1 + age | SID)")
+  fquad       <- paste0("lonely ~ ", paste0(c("age", "age2", mes)      , collapse = " + "), " + (1 + age + age2 | SID)")
+  fint        <- paste0("lonely ~ ", paste0(c("age", mes, mint)        , collapse = " + "), " + (1 + age | SID)")
+  fintall     <- paste0("lonely ~ ", paste0(c("age", allmint)          , collapse = " + "), " + (1 + age | SID)")
+  fquadint    <- paste0("lonely ~ ", paste0(c("age", mes, mint, mintq) , collapse = " + "), " + (1 + age + age2 | SID)")
+  fquadintall <- paste0("lonely ~ ", paste0(c("age", allmint, allmintq), collapse = " + "), " + (1 + age + age2 | SID)")
+  fint2       <- paste0("lonely ~ ", paste0(c("age", mint2)            , collapse = " + "), " + (1 + age | SID)")
+  fquadint2   <- paste0("lonely ~ ", paste0(c("age", "age2", mintq2)   , collapse = " + "), " + (1 + age + age2 | SID)")
   
   dl <- map(dl, ~(.) %>% 
               group_by(SID) %>% 
@@ -563,15 +707,17 @@ lmer_imp_fun <- function(dl, study){
   
   # plan(multisession(workers = 4L))
   nested_imp <- tribble(
-    ~model     , ~random , ~int          , ~cov  , ~form,
-    "Linear"   , "slope" , "Main"        , "adj" , flin, # 5
-    "Quadratic", "slope" , "Main"        , "adj" , fquad, # 11
-    "Linear"   , "slope" , "Interaction" , "adj" , fint, # 7
-    "Quadratic", "slope" , "Interaction" , "adj" , fquadint, # 13
-    "Linear"   , "slope" , "b.age"       , "adj" , fint2, # 7
-    "Quadratic", "slope" , "b.age"       , "adj" , fquadint2 
+    ~model     , ~random , ~int             , ~cov  , ~form,
+    "Linear"   , "slope" , "Main"           , "adj" , flin, # 5
+    "Quadratic", "slope" , "Main"           , "adj" , fquad, # 11
+    "Linear"   , "slope" , "Interaction"    , "adj" , fint, # 7
+    "Quadratic", "slope" , "Interaction"    , "adj" , fquadint, # 13
+    "Linear"   , "slope" , "AllInteraction" , "adj" , fintall, # 7
+    "Quadratic", "slope" , "AllInteraction" , "adj" , fquadintall, # 13
+    "Linear"   , "slope" , "b.age"          , "adj" , fint2, # 7
+    "Quadratic", "slope" , "b.age"          , "adj" , fquadint2 
   ) %>%
-    filter(int == "b.age" & model == "Quadratic") %>%
+    # filter(int == "AllInteraction") %>%
     mutate(
       # run the models
       m            = map(form , possibly(~lapply(dl, function(x) lmer_call(x, .)), NA_real_))
@@ -598,50 +744,36 @@ lmer_imp_fun <- function(dl, study){
       , s = pmap(list(model, study, random, int, cov, res, "imp", "04-summary"), possibly(save_fun, NA_real_))
       )
   # closeAllConnections()
-  # nested_imp %>% mutate(s = pmap(list(model, study, random, int, cov, m, "imp", "01-models"), save_fun),
-  #                       s = pmap(list(model, study, random, int, cov, mlist, "imp", "01-models/01-model-lists"), save_fun),
-  #                       s = pmap(list(model, study, random, int, cov, mplot, "imp", "02-predicted"), save_fun),
-  #                       s = pmap(list(model, study, random, int, cov, res, "imp", "04-summary"), save_fun),
-  #                       s = pmap(list(model, study, random, int, cov, pool, "imp", "06-pooled"), save_fun)
-  #                       )
   return(T)
 }
 
-# plan(multisession(workers = 8L))
+plan(multisession(workers = 8L))
 nested_imp_mods <- nested_data %>%
-  # arrange(study) %>%
-  # filter(!study %in% c("LISS", "SHP", "BHPS")) %>%
   mutate(m = 
-           # future_map2(imp, study
-           map2(imp, study
+           future_map2(imp, study
+           # map2(imp, study
                          , .f = lmer_imp_fun
-                         # , .progress = T
-    # , .options = furrr_options(
-    #       globals = c("lmer_fun"
-    #                   , "lmer_call"
-    #                   , "long_fun"
-    #                   , "pred_fun"
-    #                   , "comp_fun"
-    #                   , "psych"
-    #                   , "wd"
-    #                   , "nlopt"
-    #                   , "summary_fun"
-    #                   , "fac_fun")
-    #     , packages = c("lme4"
-    #                    , "broom"
-    #                    , "broom.mixed"
-    #                    , "mice"
-    #                    , "merTools"
-    #                    , "plyr"
-    #                    , "tidyverse"))
+                         , .progress = T
+    , .options = furrr_options(
+          globals = c("lmer_fun"
+                      , "lmer_call"
+                      , "long_fun"
+                      , "pred_fun"
+                      , "comp_fun"
+                      , "psych"
+                      , "wd"
+                      , "nlopt"
+                      , "summary_fun"
+                      , "fac_fun")
+        , packages = c("lme4"
+                       , "broom"
+                       , "broom.mixed"
+                       , "mice"
+                       , "merTools"
+                       , "plyr"
+                       , "tidyverse"))
     ))
 closeAllConnections()
-
-# nested_imp_mods %>% 
-#   select(study, m) %>%
-#   unnest(m) %>%
-#   mutate(res = pmap(list(m, pool, mlist_pool, mplot, "imp"), summary_fun),
-#          s = pmap(list(model, study, random, int, cov, res, "imp", "04-summary"), save_fun))
 ```
 
 ```{r}
@@ -664,8 +796,8 @@ tibble(file = list.files(sprintf("%s/03-results/01-models", wd), pattern = "b.ag
   mutate(se = map(file, se_fun))
 ```
 
-
 ## Compile ICC's    
+
 ```{r}
 loadRData <- function(fileName){
 #loads an RData file, and returns it

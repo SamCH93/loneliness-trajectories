@@ -11,12 +11,6 @@ editor_options:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-Notes for today's meeting:  
-- Need to finalize LISS, BHPS, OCTO, SHP  
-- How to code b.age for interaction plots  
-- How to organize all the various terms in tables  
-- Formatting of the forest plots  
-
 ```{r}
 stdcolors <- tibble(studies = c("HRS", "SHARE", "ELSA", "SATSA", "OCTOTWIN", "GSOEP", "LISS", "HILDA", "SHP")
        , colors = c("#332288", "#88ccee", "#44aa99", "#117733", "#999933", "#ddcc77", "#cc6677", "#882255", "#aa4499"))
@@ -66,21 +60,8 @@ for (i in 1:nrow(rs)) {
 desc_tab
 ```
 
-```{r}
-# N @basline                            X
-# Number of MO’s                        X
-# Intervals between MO (mean or mode)   X
-# Baseline year                         X 
-# Country         
-# Baseline age (mean, range)            X
-# %Female                               X
-# Loneliness mean/sd (baseline)         X
-# Loneliness scale (UCLA or CES-D)
-# Isolation mean/sd (baseline)          X
-# % married/divorced/widow/single       X
-# Education mean/sd                     X
-# Functional limitations (mean/sd)      X
 
+```{r}
 std.meta <- tribble(
   ~study,          ~country,            ~scale
   , "LISS"         , "The Netherlands"  , "CES-D"
@@ -169,6 +150,37 @@ man_desc_tab <- man_desc_tab %>%
 save_kable(man_desc_tab, file = sprintf("%s/03-results/10-tables/study-desc-tab.html", wd))
 ```
 
+
+```{r}
+link_fun <- function(d, int){
+  if(!int %in% c("continent", "scale")){
+    d <- d %>% mutate(metamod = as.numeric(metamod))
+  }
+  return(d)
+}
+
+study.info <- tibble(
+  study=c('ELSA','GSOEP','HILDA','HRS','LISS','OCTOTWIN','SATSA','SHARE','SHP'),
+  continent=c("Europe", "Europe", "Australia", "United States", "Europe", "Europe", "Europe", "Europe", "Europe"),
+  year=c('2004','1990','2006','2009','2009','1991','1985','2004','2019'),
+  lastYear = c('2016', '2018', '2019', '2016', '2020', '2000', '2007', '2012', '2020'),
+  MO=c('7','20','13','5','12','5','9','4','14'),
+  interval=c('2','1','1','2','1','2','3','2','1'),
+  scale=c('UCLA','CES-D','CES-D','UCLA','Rasch-Type','CES-D','CES-D','UCLA','CES-D'),
+  range = as.character(as.numeric(lastYear)-as.numeric(year))
+) %>%
+  select(-lastYear) %>%
+  pivot_longer(
+    cols = -study
+    , names_to = "int"
+    , values_to = "metamod"
+  ) %>%
+    group_by(int) %>%
+    nest() %>%
+    ungroup() %>%
+    mutate(data = map2(data, int, link_fun))
+```
+
 # Compile Results  
 ```{r}
 loadRData <- function(fileName){
@@ -184,12 +196,14 @@ loadRData <- function(fileName){
 nested_res <- tibble(
   file = sprintf("%s/03-results/04-summary", wd) %>% list.files()
 ) %>%
+  separate(file, c("Imputed", "study", "model", "random", "int", "cov"), sep = "_", remove = F) %>% 
+  # filter(int == "AllInteraction") %>%
   mutate(data = map(file, possibly(loadRData, NA_real_))
-         , file = str_remove_all(file, ".RData")) %>%
-  separate(file, c("Imputed", "study", "model", "random", "int", "cov"), sep = "_") %>% 
+         , cov = str_remove_all(cov, ".RData")) %>%
+  select(-file) %>%
   filter(!is.na(data)) %>%
   filter(study != "BHPS") %>%
-  filter(!(study == "OCTOTWIN" & model == "Quadratic" & int == "Interaction")) %>%
+  filter(!(study == "OCTOTWIN" & model == "Quadratic" & grepl("Interaction", int))) %>%
   # filter(int == "b.age") %>%
   unnest(data)
 ```
@@ -198,64 +212,96 @@ nested_res <- tibble(
 ## Fixed Effect Tables  
 ```{r}
 terms <- tribble(
-  ~old               , ~new
-  , "(Intercept)"      , "(Intercept)"
-  , "age"            , "Age"
-  , "age2"           , "Age^2"
-  , "b.age"          , "Baseline Age"
-  , "sex"            , "Sex"
-  , "b.isolated"     , "Social Isolation"
-  , "functional"     , "Functional Limitations"
-  , "maritalB"       , "Divorced (v. Married)"
-  , "maritalC"       , "Widow (v. Married)"
-  , "maritalD"       , "Never Married (v. Married)"
-  , "educ"           , "Education"
-  , "income"         , "Income"
-  , "drink1"         , "Drinker"
-  , "drink"          , "Drinker"
-  , "smoke1"         , "Smoker"
-  , "smoke"          , "Smoker"
-  , "bmi"            , "BMI"
-  , "cc1"            , "Conditions (1)"
-  , "cc2"            , "Conditions (2)"
-  , "cc3"            , "Conditions (3)"
-  , "cc"             , "Conditions"
-  , "depression1"    , "Depression"
-  , "depression"     , "Depression"
-  , "episodic"       , "Episodic Memory"
-  , "mstat"          , "Mental Status"
-  , "age:b.age"      , "Age x Baseline Age"
-  , "age:sex"        , "Age x Sex"
-  , "age:b.isolated" , "Age x Social Isolation"
-  , "age:functional" , "Age x Functional Limitations"
-  , "age:maritalB"   , "Age x Divorced (v. Married)"
-  , "age:maritalC"   , "Age x Widow (v. Married)"
-  , "age:maritalD"   , "Age x Never Married (v. Married)"
-  , "age:educ"       , "Age x Education"
-  , "b.age:sex"        , "Baseline Age x Sex"
-  , "b.age:b.isolated" , "Baseline Age x Social Isolation"
-  , "b.age:functional" , "Baseline Age x Functional Limitations"
-  , "b.age:maritalB"   , "Baseline Age x Divorced (v. Married)"
-  , "b.age:maritalC"   , "Baseline Age x Widow (v. Married)"
-  , "b.age:maritalD"   , "Baseline Age x Never Married (v. Married)"
-  , "b.age:educ"       , "Baseline Age x Education"
-  , "b.age:age2"     , "Age^2 x Baseline Age"
-  , "sex:age2"       , "Age^2 x Sex"
-  , "b.isolated:age2", "Age^2 x Social Isolation"
-  , "functional:age2", "Age^2 x Functional Limitations"
-  , "maritalB:age2"  , "Age^2 x Divorced (v. Married)"
-  , "maritalC:age2"  , "Age^2 x Widow (v. Married)"
-  , "maritalD:age2"  , "Age^2 x Never Married (v. Married)"
-  , "educ:age2"      , "Age^2 x Education"
-  , "Int Var"        , "\\\\tau_{00}$"
-  , "Slope Var"      , "$\\\\tau_{11}$ \n"
-  , "Q Slope Var"    , "$\\\\tau_{22}$ \n"
-  , "Int-Slope Covar", "$\\\\tau_{01}$ \n"
-  , "Residual"       , "$\\\\sigma^2$"
-  # , "icc", 
-  , "n.group"       , "$N_{people}$"
-  , "n.obs"          , "$N_{obs}$"
-  , "ll"             , "LL"
+  ~old                    , ~new
+  , "(Intercept)"           , "(Intercept)"
+  , "age"                 , "Age"
+  , "age2"                , "Age^2"
+  , "b.age"               , "Baseline Age"
+  , "sex"                 , "Sex"
+  , "b.isolated"          , "Social Isolation"
+  , "functional"          , "Functional Limitations"
+  , "maritalB"            , "Divorced (v. Married)"
+  , "maritalC"            , "Widow (v. Married)"
+  , "maritalD"            , "Never Married (v. Married)"
+  , "educ"                , "Education"
+  , "income"              , "Income"
+  , "drink1"              , "Drinker"
+  , "drink"               , "Drinker"
+  , "smoke1"              , "Smoker"
+  , "smoke"               , "Smoker"
+  , "bmi"                 , "BMI"
+  , "cc1"                 , "Conditions (1)"
+  , "cc2"                 , "Conditions (2)"
+  , "cc3"                 , "Conditions (3)"
+  , "cc"                  , "Conditions"
+  , "depression1"         , "Depression"
+  , "depression"          , "Depression"
+  , "episodic"            , "Episodic Memory"
+  , "mstat"               , "Mental Status"
+  , "age:b.age"           , "Age x Baseline Age"
+  , "age:sex"             , "Age x Sex"
+  , "age:b.isolated"      , "Age x Social Isolation"
+  , "age:functional"      , "Age x Functional Limitations"
+  , "age:maritalB"        , "Age x Divorced (v. Married)"
+  , "age:maritalC"        , "Age x Widow (v. Married)"
+  , "age:maritalD"        , "Age x Never Married (v. Married)"
+  , "age:educ"            , "Age x Education"
+  , "age:income"          , "Age x Income"
+  , "age:drink1"          , "Age x Drinker"
+  , "age:drink"           , "Age x Drinker"
+  , "age:smoke1"          , "Age x Smoker"
+  , "age:smoke"           , "Age x Smoker"
+  , "age:bmi"             , "Age x BMI"
+  , "age:cc1"             , "Age x Conditions (1)"
+  , "age:cc2"             , "Age x Conditions (2)"
+  , "age:cc3"             , "Age x Conditions (3)"
+  , "age:cc"              , "Age x Conditions"
+  , "age:depression1"     , "Age x Depression"
+  , "age:depression"      , "Age x Depression"
+  , "age:episodic"        , "Age x Episodic Memory"
+  , "age:mstat"           , "Age x Mental Status"
+  , "b.age:sex"           , "Baseline Age x Sex"
+  , "b.age:b.isolated"    , "Baseline Age x Social Isolation"
+  , "b.age:functional"    , "Baseline Age x Functional Limitations"
+  , "b.age:maritalB"      , "Baseline Age x Divorced (v. Married)"
+  , "b.age:maritalC"      , "Baseline Age x Widow (v. Married)"
+  , "b.age:maritalD"      , "Baseline Age x Never Married (v. Married)"
+  , "b.age:educ"          , "Baseline Age x Education"
+  , "b.age:age2"          , "Age^2 x Baseline Age"
+  , "sex:age2"            , "Age^2 x Sex"
+  , "b.isolated:age2"     , "Age^2 x Social Isolation"
+  , "functional:age2"     , "Age^2 x Functional Limitations"
+  , "maritalB:age2"       , "Age^2 x Divorced (v. Married)"
+  , "maritalC:age2"       , "Age^2 x Widow (v. Married)"
+  , "maritalD:age2"       , "Age^2 x Never Married (v. Married)"
+  , "educ:age2"           , "Age^2 x Education"
+  , "income:age2"         , "Age^2 x Income"
+  , "drink1:age2"         , "Age^2 x Drinker"
+  , "drink:age2"          , "Age^2 x Drinker"
+  , "smoke1:age2"         , "Age^2 x Smoker"
+  , "smoke:age2"          , "Age^2 x Smoker"
+  , "bmi:age2"            , "Age^2 x BMI"
+  , "cc1:age2"            , "Age^2 x Conditions (1)"
+  , "cc2:age2"            , "Age^2 x Conditions (2)"
+  , "cc3:age2"            , "Age^2 x Conditions (3)"
+  , "cc:age2"             , "Age^2 x Conditions"
+  , "depression1:age2"    , "Age^2 x Depression"
+  , "depression:age2"     , "Age^2 x Depression"
+  , "episodic:age2"       , "Age^2 x Episodic Memory"
+  , "mstat:age2"          , "Age^2 x Mental Status"
+  , "metamodEurope"       , "Australia v Europe"
+  , "metamodUnited States", "Australia v United States"
+  , "metamodRasch-Type"   , "CES-D v Rasch-Type Scale"
+  , "metamodUCLA"         , "CES-D v UCLA Scale"
+  , "Int Var"             , "\\\\tau_{00}$"
+  , "Slope Var"           , "$\\\\tau_{11}$ \n"
+  , "Q Slope Var"         , "$\\\\tau_{22}$ \n"
+  , "Int-Slope Covar"     , "$\\\\tau_{01}$ \n"
+  , "Residual"            , "$\\\\sigma^2$"
+  # , "icc",    
+  , "n.group"             , "$N_{people}$"
+  , "n.obs"               , "$N_{obs}$"
+  , "ll"                  , "LL"
 )
                          
 
@@ -266,7 +312,7 @@ stdy_tab_fun <- function(imp, mod, rand, int, cov, d){
   rs <- d %>% group_by(type) %>% tally() %>% 
     mutate(end = cumsum(n), start = lag(end) + 1, start = ifelse(is.na(start), 1, start))
   cap <- if(mod == "unconditional") "Unconditional" else sprintf("Loneliness-%s model", mod)
-  cap <- paste(cap, if(int == "Interaction") "with Predictor Main Effects and Interactions" else "with Predictor Main Effects") 
+  cap <- paste(cap, if(grepl("Interaction", int)) "with Predictor Main Effects and Interactions" else "with Predictor Main Effects") 
   cap <- paste(if(cov == "adj") "Covariate Adjusted" else "Unadjusted", cap)
   tab <- d %>%
     select(-type) %>%
@@ -319,7 +365,7 @@ nested_study_tabs <- nested_res %>%
   unnest(coef) %>%
   filter(!is.na(term)) %>%
   mutate(pval = pnorm(abs(estimate/`std.error`), lower.tail = FALSE)
-         , p = ifelse(pval < .001, "< .001", sprintf("%.2f", pval))
+         , p = ifelse(pval < .001, "&lt; .001", sprintf("%.2f", pval))
          , type = "Fixed") %>%
   mutate_at(vars(estimate, std.error), ~ifelse(abs(.) < .01, sprintf("%.3f", .), sprintf("%.2f", .))) %>%
   mutate(bse = sprintf("%s<br>(%s)", estimate, std.error)) %>%
@@ -412,7 +458,7 @@ save_kable(model_comp_tab, file = sprintf("%s/03-results/10-tables/model_comp.ht
 ```
 
 
-# Meta-Analyses  
+f# Meta-Analyses  
 ## Set Up Data  
 ```{r}
 # need meta analyses of:                                                Imputed   | model     | random    | int       |  cov 
@@ -430,26 +476,37 @@ save_kable(model_comp_tab, file = sprintf("%s/03-results/10-tables/model_comp.ht
 # (12) unadjusted quadratic models (random slope), interactions         unimp     | qad       | slope     | Interact  | adj
 # (13) adjusted quadratic models (random slope, imputed), interactions  imp       | qad       | slope     | Interact  | adj
 
-# What is linear.main/quad.main? I don't remember it from the original script but it appears also need meta-analyses of these covariate point estimates? Are these separate models or one big one? 
-
 nested_meta <- nested_res %>% 
   unnest(n.group) %>% 
   select(Imputed:cov, coef, n.group) %>%
   unnest(coef) %>%
   select(Imputed:cov, term, estimate, std.error, n.group) %>%
   filter(term != "(Intercept)" & 
-         !(int == "Interaction" & !grepl(":", term)) & 
+         !(grepl("Interaction", int) & !grepl(":", term)) & 
          !(int == "b.age" & !grepl(":", term))) %>% # remove main effects / slopes from interaction models
   group_by(Imputed, model, random, int, cov, term) %>%
   nest() %>%
   ungroup()
+
+## bring in meta regression info
+nested_meta <- crossing(
+  study.info %>% rename(meta = data), 
+  nested_meta %>%
+  filter(int == "Main" & term %in% c("age", "age2")) %>%
+  select(-int)
+) %>%
+  mutate(data = map2(data, meta, left_join)) %>%
+  select(-meta) %>%
+  full_join(nested_meta)
 ```
 
 ## Run Meta-Analyses  
 ```{r}
 meta_fun <- function(imp, mod, rand, int, cov, term, d){
+  fm <- if (int %in% c("Main", "Interaction", "AllInteraction", "b.age")) "estimate ~ 1" else "estimate ~ 1 + metamod"
   m <- rma(
-    yi = estimate
+    # yi = estimate
+    formula(fm)
     , sei = `std.error`
     , ni = n.group
     , slab = study
@@ -469,17 +526,32 @@ nested_meta <- nested_meta %>%
 ## Tables  
 ### Meta-Analytic Effects  
 ```{r}
+stdyModers <- study.info %>% select(-data) %>%
+  mutate(new = mapvalues(
+    int,
+    c("continent", "year", "MO", "interval", "scale", "range"),
+    c("Continent", "Year", "# Measurement Occasions", "Interval Between Occasions", "Loneliness Scale", "Interval of Study")
+  ))
+
 meta_tab_fun <- function(imp, mod, rand, int, cov, d){
-  cap <- if(mod == "unconditional") "Unconditional" else sprintf("Loneliness-%s model", mod)
+  cap <- if(mod == "unconditional") "Unconditional" else if(int %in% stdyModers$int) sprintf("Loneliness-%s %s meta-regression model", mod, int) else sprintf("Loneliness-%s model", mod)
   cap <- paste(cap, if(int == "Interaction") "with Predictor Main Effects and Interactions" else if(int == "b.age") "with Predictor Main Effects and Baseline Age Interactions" else "with Predictor Main Effects") 
   cap <- paste(if(cov == "adj") "Covariate Adjusted" else "Unadjusted", cap)
+  if(int %in% stdyModers$int) {
+    cn <- c("Term", "Meta-Moderator", "B", "SE", "p")
+    al <- c("r", "r", rep("c", 3))
+  } else{
+    cn <- c("Term", "B", "SE", "p")
+    al <- c("r", rep("c", 3))
+    d <- d %>% select(-metaterm)
+  }
   tab <- d %>%
     mutate(term = mapvalues(term, terms$old, terms$new, warn_missing = F)) %>%
     kable(.
           , "html"
           , escape = F
-          , align = c("r", rep("c", 3))
-          , col.names = c("Term", "B", "SE", "p")
+          , align = al
+          , col.names = cn
           , caption = cap
           , booktabs = T
           ) %>%
@@ -491,17 +563,26 @@ meta_tab_fun <- function(imp, mod, rand, int, cov, d){
 
 nested_meta_tab <- nested_meta %>%
   mutate(tidy = map(m, ~tidy(.) %>% 
-                      select(-type, -term) %>%
+                      select(-type) %>%
+                      rename(metaterm = term) %>%
                       mutate(study = "meta"))
          ) %>%
   select(-data, -m) %>%
   unnest(tidy) %>% 
+  mutate(metaterm = ifelse(metaterm == "metamod", int, metaterm)) %>%
+  filter(!(int %in% stdyModers$int & metaterm == "intercept")) %>%
   mutate(sig = ifelse(p.value < .05, "sig", "ns")
-         , p = ifelse(p.value < .001, "< .001", sprintf("%.2f", p.value))) %>%
+         , p = ifelse(p.value < .001, "&lt; .001", sprintf("%.2f", p.value))) %>%
   mutate_at(vars(estimate, std.error), ~ifelse(abs(.) < .01, sprintf("%.3f", .), 
                                sprintf("%.2f", .))) %>%
   mutate_at(vars(estimate, std.error, p), ~ifelse(sig == "sig", sprintf("<strong>%s</strong>", .), .)) %>%
-  select(Imputed, model, random, int, cov, term, estimate, std.error, p) %>%
+  select(Imputed, model, random, int, cov, term, metaterm, estimate, std.error, p) 
+
+nested_metamod_tab <- nested_meta_tab %>%
+  filter(int %in% stdyModers$int)
+
+nested_meta_tab <- nested_meta_tab %>%
+  filter(!int %in% stdyModers$int) %>%
   group_by(Imputed, model, random, int, cov) %>%
   nest() %>%
   ungroup() %>%
@@ -509,21 +590,66 @@ nested_meta_tab <- nested_meta %>%
 ```
 
 ```{r}
+metamod_tab_fun <- function(imp, mod, rand, cov, d){
+  cap <-  sprintf("Loneliness-%s Meta-Regression Models", mod) 
+  cap <- paste(cap, "with Predictor Main Effects") 
+  cap <- paste(if(cov == "adj") "Covariate Adjusted" else "Unadjusted", cap)
+  cn <- c("Meta-Moderator", "Term", "Meta-Term", "B", "SE", "p")
+  al <- c(rep("r", 3), rep("c", 3))
+  tab <- d %>%
+    mutate(term = mapvalues(term, terms$old, terms$new, warn_missing = F)
+           , metaterm = mapvalues(metaterm, terms$old, terms$new, warn_missing = F)
+           , int = mapvalues(int, stdyModers$int, stdyModers$new, warn_missing = F)) %>%
+    kable(.
+          , "html"
+          , escape = F
+          , align = al
+          , col.names = cn
+          , caption = cap
+          , booktabs = T
+          ) %>%
+    kable_classic(full_width = F, font_size = 12, html_font = "Times New Roman")
+  save_kable(tab, file = sprintf("%s/03-results/10-tables/meta-tables/%s_%s_%s_metamod_%s.html"
+                                 , wd, imp, mod, rand, cov))
+  return(tab)
+}
+
+nested_metamod_tab <- nested_metamod_tab %>%
+  filter(!(model == "Quadratic" & term == "age")) %>%
+  group_by(Imputed, model, random, cov) %>%
+  nest() %>%
+  ungroup() %>%
+  mutate(tab = pmap(list(Imputed, model, random, cov, data), metamod_tab_fun))
+```
+
+
+```{r}
 meta_res <- nested_meta %>%
     mutate(tidy = map(m, ~tidy(.) %>% 
-                        select(-type, -term) %>%
-                        mutate(study = "meta"))
+                      select(-type) %>%
+                      rename(metaterm = term) %>%
+                      mutate(study = "meta"))
            ) %>%
     select(-data, -m) %>%
-    unnest(tidy) %>% 
+    unnest(tidy) %>% mutate(metaterm = ifelse(metaterm == "metamod", int, metaterm)) %>%
+  # filter(!(int %in% stdyModers$int & metaterm == "intercept")) %>%
     mutate(sig = ifelse(p.value < .05, "sig", "ns")
-           , p = ifelse(p.value < .001, "< .001", sprintf("%.2f", p.value))
+           , p = ifelse(p.value < .001, "&lt; .001", sprintf("%.2f", p.value))
            , estimate = ifelse(abs(estimate) < .01, sprintf("%.3f", estimate), 
                                sprintf("%.2f", estimate))
            , std.error = ifelse(abs(std.error) < .01, sprintf("%.3f", std.error), 
                                sprintf("%.2f", std.error))
            , res = sprintf("(*B* = %s [*SE* = %s], *p* = %s)", estimate, std.error, p)) %>%
-  select(Imputed:term, res) %>%
+  select(int:term, metaterm, res)
+
+metamod_res <- meta_res %>%
+  filter(int %in% stdyModers$int) %>%
+  pivot_wider(names_from = c("Imputed", "model", "random", "int", "cov", "term", "metaterm")
+              , values_from = "res")
+
+meta_res <- meta_res %>% 
+  filter(!int %in% stdyModers$int) %>%
+  select(-metaterm) %>%
   pivot_wider(names_from = c("Imputed", "model", "random", "int", "cov", "term")
               , values_from = "res")
 
@@ -541,11 +667,11 @@ meta_std_tab_fun <- function(imp, mod, rand, int, cov, d){
   new <- mapvalues(trms, terms$old, terms$new, warn_missing = F)
   hdr <- c(1, rep(3, length(trms))); names(hdr) <- c(" ", new)
   cap <- if(mod == "unconditional") "Unconditional" else sprintf("Loneliness-%s model", mod)
-  cap <- paste(cap, if(int == "Interaction") "with Predictor Main Effects and Interactions" else if(int == "b.age") "with Predictor Main Effects and Baseline Age Interactions" else "with Predictor Main Effects") 
+  cap <- paste(cap, if(grepl("Interaction", int)) "with Predictor Main Effects and Interactions" else if(int == "b.age") "with Predictor Main Effects and Baseline Age Interactions" else "with Predictor Main Effects") 
   cap <- paste(if(cov == "adj") "Covariate Adjusted" else "Unadjusted", cap)
   tab <- d %>% 
     mutate(sig = ifelse(p.value < .05, "sig", "ns")
-           , p = ifelse(p.value < .001, "< .001", sprintf("%.2f", p.value))
+           , p = ifelse(p.value < .001, "&lt; .001", sprintf("%.2f", p.value))
            , estimate = ifelse(abs(estimate) < .01, sprintf("%.3f", estimate), sprintf("%.2f", estimate))
            , std.error = ifelse(abs(std.error) < .01, sprintf("%.3f", std.error), sprintf("%.2f", std.error))) %>%
     mutate_at(vars(estimate, std.error, p), ~ifelse(sig == "sig", sprintf("<strong>%s</strong>", .), .)) %>%
@@ -574,7 +700,7 @@ nested_meta_std_tabs <- nested_res %>%
   mutate(p.value = pnorm(abs(estimate/`std.error`), lower.tail = FALSE)) %>%
   select(Imputed:cov, term, estimate, std.error, statistic, p.value) %>%
   filter(term != "(Intercept)" & 
-         !(int == "Interaction" & !grepl(":", term))) %>%
+         !(grepl("Interaction", int) & !grepl(":", term))) %>%
   full_join(
     nested_meta %>%
       mutate(tidy = map(m, ~tidy(.) %>% 
@@ -617,13 +743,13 @@ loadRData <- function(fileName){
 nested_plots <- tibble(
   file = sprintf("%s/03-results/02-predicted", wd) %>% list.files()
 ) %>%
+  separate(file, c("Imputed", "study", "model", "random", "int", "cov"), sep = "_", remove = F) %>%
   mutate(data = map(file, loadRData)
-         , file = str_remove_all(file, ".RData")) %>%
-  separate(file, c("Imputed", "study", "model", "random", "int", "cov"), sep = "_") %>% 
+         , cov = str_remove_all(cov, ".RData")) %>%
+  select(-file) %>%
   filter(!is.na(data)) %>%
   filter(study != "BHPS") %>%
-  filter(!(study == "OCTOTWIN" & model == "Quadratic" & int == "Interaction")) %>%
-  # filter(int == "b.age") %>%
+  filter(!(study == "OCTOTWIN" & model == "Quadratic" & grepl("Interaction", int))) %>%
   unnest(data) 
 ```
 
@@ -645,12 +771,12 @@ traj_plot_fun <- function(mod, cov, imp, random, d){
     stat_smooth(aes(weight = n.group),
               method = "lm",
               formula = frm,
-              size = 1.2, color = "darkslateblue") +
+              size = 1.2, color = "black") +
     scale_color_manual(values = cols)+
     scale_y_continuous(limits = c(0, 5.5), breaks = seq(1,5,1)) + 
     coord_cartesian(
       xlim = c(20, 105)
-      ) + ###Updated with real data
+      ) + 
     labs(x = "Age in Years"
          , y = "Loneliness"
          , color = "Sample"
@@ -700,8 +826,24 @@ mod_vals <- tribble(
   , "educ1"       , "High Social Education"      , "educ"
   , "b.isolated-1", "Low Social Isolation"       , "b.isolated"
   , "b.isolated1" , "High Social Isolation"      , "b.isolated"
-  , "b.age-15"    , "Low Baseline Age"           , "b.age"
-  , "b.age15"     , "High Baseline Age"          , "b.age"
+  , "b.age-4"    , "Low Baseline Age"           , "b.age"
+  , "b.age0"     , "High Baseline Age"          , "b.age"
+  , "bmi-1"       , "Low BMI"                    , "bmi"
+  , "bmi1"        , "High BMI"                   , "bmi"
+  , "income-1"    , "Low Baseline Income"        , "income"
+  , "income1"     , "High Baseline Income"       , "income"
+  , "drink0"      , "Non-Drinker"                , "drink"
+  , "drink1"      , "Drinks Alcohol"             , "drink"
+  , "smoke0"      , "Non-Smoker"                 , "smoke"
+  , "smoke1"      , "Smokes"                     , "smoke"
+  , "episodic-1"  , "Low Episodic Memory"        , "episodic"
+  , "episodic1"   , "High Episodic Memory"       , "episodic"
+  , "mstat-1"     , "Low MMSE"                   , "mstat"
+  , "mstat1"      , "High MMSE"                  , "mstat"
+  , "depression0"  , "Low Depressive Symptoms"    , "depression"
+  , "depression1"  , "High Deprssive Symptoms"    , "depression"
+  , "cc0"         , "Low Chronic Coniditions"    , "cc"
+  , "cc1"         , "High Chronic Coniditions"   , "cc"
 )
 
 int_plot_fun <- function(d, int, mod, cov, random, imp){
@@ -715,7 +857,7 @@ int_plot_fun <- function(d, int, mod, cov, random, imp){
   cols <- (stdcolors %>% filter(studies %in% std))$colors
   if(int == "b.age"){
     d <- d %>%
-      filter((b.age == 15 & age > 0) | (b.age == -15 & age < 1))
+      filter((b.age == 0 & age > 0) | (b.age == -4 & age < 1))
   }
   p <- d %>% 
     select(study, age, fit, int, n.group) %>%
@@ -725,7 +867,7 @@ int_plot_fun <- function(d, int, mod, cov, random, imp){
     group_by(study, age, mod_value, n) %>%
     summarize(fit = mean(fit, na.rm = T)) %>%
     ungroup() %>%
-    filter(!is.na(mod_value)) %>%
+    filter(!is.na(mod_value) & fit >= 0 & fit <= 10) %>%
     ggplot(aes(x = age*10 + 60, y = fit)) +
       geom_line(aes(color = study
                     , group = interaction(study, factor(mod_value)))
@@ -735,7 +877,7 @@ int_plot_fun <- function(d, int, mod, cov, random, imp){
                   , method = "lm"
                   , formula = frm
                   , size = 1.2
-                  , color = "darkslateblue"
+                  , color = "black"
                   ) +
     scale_color_manual(values = cols) + 
     labs(x = "Age in Years"
@@ -762,18 +904,25 @@ int_plot_fun <- function(d, int, mod, cov, random, imp){
   return(p)
 }
 
+orig_int <- c("b.isolated", "sex", "marital", "b.age", "functional", "educ")
+new_int  <- c("income", "drink", "smoke", "bmi", "cc", "depression", "episodic", "mstat")
 int_traj_plots <- nested_plots %>% 
-  filter(int != "Main" & int != "b.age") %>%
+  filter(int != "Main") %>% #& int != "b.age") %>%
   left_join(nested_res %>% select(Imputed:cov, n.group) %>% unnest(n.group)) %>%
   group_by(int, Imputed, model, random, cov) %>%
   nest() %>% 
   ungroup()
+
 int_traj_plots <- crossing(
   int_traj_plots
-  , term = c("b.isolated", "marital", "sex", "functional", "educ", "b.age") 
+  , term = c("b.isolated", "marital", "sex", "functional", "educ", "b.age"
+   , "income", "drink", "smoke", "bmi", "cc", "depression", "episodic", "mstat")
   ) %>%
-  # filter(term == "b.age") %>%
-  mutate(p = pmap(list(data, term, model, cov, random, Imputed), int_plot_fun))
+  filter(!grepl("Interaction", int) | 
+         (int == "Interaction" & term %in% orig_int) |
+         (int == "AllInteraction" & !term %in% orig_int)) %>%
+  filter(!(int == "b.age" & term != "b.age")) %>%
+  mutate(p = pmap(list(data, term, model, cov, random, Imputed), possibly(int_plot_fun, NA_real_)))
 ```
 
 ### Forest Plots  
@@ -840,21 +989,14 @@ f_plot_fun <- function(d, trm, imp, mod, random, int, cov, I2, Q, p, df){
     select(study, n.group, est) %>%
     pivot_longer(cols = c(n.group, est), names_to = "est", values_to = "value")
   p2 <- d2 %>%
-    # mutate_at(vars(estimate, lower, upper)
-    #           , ~ifelse(abs(.) < .01, sprintf("%.3f", .), sprintf("%.2f", .))) %>%
-    # mutate(est = sprintf("%s [%s, %s]", estimate, lower, upper)) %>%
     ggplot(aes(x = study, y = est)) +
       geom_text(aes(label = value), hjust = .5, size = 3.5) + 
-    
-      # geom_text(aes(label = n.group), hjust = 1) +
       annotate("text", label = "b [CI]", x = length(stds) + 1.75, y = "est", hjust = .5, vjust = 0, fontface = "bold") +
       annotate("text", label = "N", x = length(stds) + 1.75, y = "n.group", hjust = .5, vjust = 0, fontface = "bold") +
-      # geom_text(aes(label = "N", x = length(stds) + 2), hjust = 1) +
       geom_vline(aes(xintercept = 1.5)) +
       geom_vline(aes(xintercept = length(stds) + 1.5)) +
       coord_flip() +
       theme_void() +
-      # labs(title = " ") +
       theme(plot.title = element_text(face = "bold", hjust = 0)
             , axis.text = element_blank()
             , axis.ticks = element_blank()
@@ -896,6 +1038,7 @@ f_plot_fun <- function(d, trm, imp, mod, random, int, cov, I2, Q, p, df){
   
   # add the title and subtitle
   p <- cowplot::plot_grid(ttl, subttl, p3, rel_heights = c(.1, .05, .85), nrow = 3)
+  trm <- str_replace_all(trm, ":", "X")
   ggsave(p, file = sprintf("%s/03-results/09-plots/02-forest-plots/%s-%s-%s-%s-%s-%s.pdf", 
                            wd, trm, imp, mod, random, int, cov)
          , width = 6, height = 3)
@@ -911,7 +1054,7 @@ fplot_nested <- nested_res %>%
   unnest(coef) %>%
   select(Imputed:cov, term, estimate, std.error, statistic, p.value, n.group) %>%
   filter(term != "(Intercept)" & 
-         !(int == "Interaction" & !grepl(":", term)) & 
+         !(int %in% c("Interaction", "AllInteraction") & !grepl(":", term)) & 
          !(int == "b.age" & !grepl(":", term))) %>%
   full_join(
     nested_meta %>%
@@ -919,7 +1062,10 @@ fplot_nested <- nested_res %>%
                           select(-type, -term) %>%
                           mutate(study = "Meta-Analytic"))
              ) %>%
-      select(-data) %>%
+      select(-data, -m) %>%
+      filter(term != "(Intercept)" & 
+         !(int %in% c("Interaction", "AllInteraction") & !grepl(":", term)) & 
+         !(int == "b.age" & !grepl(":", term))) %>%
       unnest(tidy)
   ) %>%
   mutate(lower = estimate - 1.96*std.error
@@ -936,6 +1082,7 @@ fplot_nested <- nested_res %>%
              , df = map_dbl(m, ~(.)$k - (.)$p)
              ) %>%
       select(-data, -m)) %>%
+  filter(!map_lgl(data, is.null)) %>%
   mutate(p = pmap(list(data, term, Imputed, model, random, int, cov, I2, Q, p, df), f_plot_fun))
 ```
 
@@ -943,7 +1090,7 @@ fplot_nested <- nested_res %>%
 ```{r}
 fp_group_plot_fun <- function(d, imp, mod, rand, int, cov){
   
-  ttl <- if(int == "Interaction") sprintf("%s Change in Loneliness", mod) else "Loneliness Levels"
+  ttl <- if(grepl("Interaction", int)) sprintf("%s Change in Loneliness", mod) else "Loneliness Levels"
   ttl <- sprintf("Forest Plots of Predictors of %s", ttl)
   
   my_theme <- function(...) theme_classic() + theme(plot.title = element_text(face = "bold", hjust = .5))
@@ -972,7 +1119,14 @@ fplot_nested_gr <- fplot_nested %>%
   filter((Imputed == "imp" & model == "Linear" & random == "slope" & int == "Main" & 
         term %in% c("b.isolated", "sex", "maritalB", "maritalC", "maritalD", "b.age", "functional", "educ")) | 
          (Imputed == "imp" & model == "Linear" & random == "slope" & int == "Interaction")| 
-         (Imputed == "imp" & model == "Quadratic" & random == "slope" & int == "Interaction" & grepl("age2", term))) %>%
+         (Imputed == "imp" & model == "Quadratic" & random == "slope" & int == "Interaction" & grepl("age2", term)) |  
+        
+         (Imputed == "imp" & model == "Linear" & random == "slope" & int == "AllInteraction" & term %in% paste0("age:", new_int)) | 
+         (Imputed == "imp" & model == "Quadratic" & random == "slope" & int == "AllInteraction" & grepl("age2", term) & term %in% paste0(new_int, ":age2"))) %>%
+  full_join(fplot_nested %>% 
+              filter((Imputed == "imp" & model == "Linear" & random == "slope" & int == "Main" & 
+        term %in% new_int)) %>% 
+          mutate(int = "AllMain")) %>%
   select(-data) %>%
   group_by(Imputed, model, random, int, cov) %>%
   nest() %>%
@@ -1038,7 +1192,7 @@ fplot_int_panels <- fplot_nested %>%
   separate(term, c("scrap", "term"), sep = ":") %>%
   mutate(term = ifelse(is.na(term), scrap, term)) %>%
   select(Imputed:cov, term, p) %>%
-  mutate(group = mapvalues(term, mod_vals$old, mod_vals$group)) %>%
+  mutate(group = mapvalues(term, mod_vals$old, mod_vals$group, warn_missing = F)) %>%
   group_by(Imputed, model, random, int, cov, group) %>%
   nest() %>%
   ungroup() %>%
@@ -1137,9 +1291,7 @@ function(d, mod, term){
         , title = sprintf("Baseline Age x %s", term)
         , subtitle = "Simple Effects Across Age Groups"
         ) + 
-      facet_grid(study ~ . 
-                 # , switch = "y"
-                 ) + 
+      facet_grid(study ~ . ) + 
       theme_classic() + 
       theme(
         legend.position = "none"
