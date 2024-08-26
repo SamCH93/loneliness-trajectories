@@ -72,6 +72,8 @@ Mode <- function(x) {
 }
 ```
 
+Note: All studies listed below from LISS to OCTO-Twin were cleaned by Emorie Beck. The three remaining studies were cleaned by Katie Jackson and are included in separate scripts. 
+
 ## LISS
 
 ### Load Data
@@ -1403,7 +1405,7 @@ save(bhps_comb, bhps_cov, bhps_pred
 rm(list = ls()[grepl("bhps", ls())])
 ```
 
-## SATSA (NEEDS REDONE)  
+## SATSA   
 
 ### Load Data  
 ```{r satsa load fun} 
@@ -1661,7 +1663,7 @@ save(satsa_mi
 rm(list = ls()[grepl("satsa", ls())])
 ```
 
-## OCTO (NEEDS REDONE)  
+## OCTO   
 
 ```{r octo twin codebook}
 (octotwin_codebook <- (codebook %>% filter(study == "OCTO"))$codebook[[1]] %>%
@@ -1906,3 +1908,14 @@ save(octotwin_mi
 rm(list = ls()[grepl("octo", ls())])
 ```
 
+## HRS 
+
+See Clean_HRS.R on GitHub and the OSF. 
+
+## ELSA 
+
+See Clean_ELSA.R on GitHub and the OSF. 
+
+## SHARE 
+
+See Clean_SHARE.R on GitHub and the OSF. 
