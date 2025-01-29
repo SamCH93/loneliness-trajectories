@@ -1,0 +1,115 @@
+---
+title: "Graham et al. (2024) - Robustness checks"
+author: "Samuel Pawel, Luisa Kutlar, Philipp Knöpfle"
+date: "28 January 2025"
+output: html_document
+---
+
+Load packages
+```{r, message = FALSE, warning = FALSE}
+library(metafor)
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(knitr)
+```
+
+Load models based on different data sets
+```{r}
+files <- c("imp_ELSA_Quadratic_slope_Main_adj.RData",
+           "imp_GSOEP_Quadratic_slope_Main_adj.RData",
+           "imp_HILDA_Quadratic_slope_Main_adj.RData",
+           "imp_HRS_Quadratic_slope_Main_adj.RData",
+           "imp_LISS_Quadratic_slope_Main_adj.RData",
+           "imp_OCTOTWIN_Quadratic_slope_Main_adj.RData",
+           "imp_SATSA_Quadratic_slope_Main_adj.RData",
+           "imp_SHARE_Quadratic_slope_Main_adj.RData")
+
+getsummaries <- function(file) {
+  load(paste0("../03-results/01-models/", file))
+  ses <- sapply(m, function(m) summary(m)$coefficient[3, 2])
+  ests <- sapply(m, function(m) summary(m)$coefficient[3, 1])
+  ## manually apply Rubin's rule to combine imputed estimates
+  est <- mean(ests)
+  betweenvar <- var(ests)
+  se <- sqrt(mean(ses^2) + betweenvar*(1 + 1/length(ses)))
+  data.frame(file, estimate = est, se = se)
+}
+res <- do.call("rbind", lapply(files, getsummaries))
+res$study <- sub("imp_(.*?)_.*", "\\1", res$file)
+res <- res[order(res$estimate),]
+```
+
+Meta-analyze models and reproduce forest plot
+```{r, fig.height = 5, fig.width = 8, fig.align = "center"}
+fit <- rma.uni(yi = res$estimate, sei = res$se, slab = res$study)
+cifit <- confint(fit, fixed = TRUE)
+# png(file = "forest-plot.png", width = 800, height = 450)
+forest(fit)
+# dev.off()
+```
+
+Perform leave-one-out analysis and refit random-effects meta-analysis with 
+different estimation methods
+```{r, fig.height = 6, fig.width = 8, fig.align = "center"}
+l1oDF <- leave1out(fit)
+
+methods <- c("REML", "DL", "PM", "EB")
+estimationDF <- do.call("rbind", lapply(methods, function(method) {
+  fit <- rma.uni(yi = res$estimate, sei = res$se, slab = res$study, method = method)
+  ci <- confint(fit, fixed = TRUE)
+  data.frame(method, est = ci$fixed[1], cil = ci$fixed[2], ciu = ci$fixed[3])
+}))
+
+estimationDF$orig <- ifelse(estimationDF$method == "REML", TRUE, FALSE)
+estimationDF$method <- ifelse(estimationDF$method == "REML", "REML (original)",
+                              estimationDF$method)
+p1 <- ggplot(data = estimationDF, aes(x = est, y = method)) +
+  geom_vline(xintercept = 0, lty = 2) +
+  geom_pointrange(aes(xmin = cil, xmax = ciu, color = orig),
+                  show.legend = FALSE) +
+  lims(x = c(0, 0.15)) +
+  labs(x = "Point estimate with 95% CI", y = "Estimation method",
+       title = "Robustness regarding estimation method") +
+  theme_bw()
+
+l1oDFplot <- data.frame(study = l1oDF$slab, estimate = l1oDF$estimate,
+                        ci.lb = l1oDF$ci.lb, ci.ub = l1oDF$ci.ub)
+l1oDFplot$orig <- FALSE
+
+p2 <- ggplot(data = l1oDFplot, aes(x = estimate, y = study)) +
+  geom_vline(xintercept = 0, lty = 2) +
+  geom_pointrange(aes(xmin = ci.lb, xmax = ci.ub, color = orig),
+                  show.legend = FALSE) +
+  lims(x = c(0, 0.15)) +
+  labs(x = "Point estimate with 95% CI", y = "Excluded study",
+       title = "Robustness regarding study exclusion") +
+  theme_bw()
+
+plot_grid(p1, p2, nrow = 2, align = TRUE)
+# ggsave(filename = "robustness.png", width = 8, height = 7)
+```
+
+Generate table with robustness check results
+```{r}
+select(estimationDF,
+       check = method,
+       lower = cil,
+       estimate = est,
+       upper = ciu) |>
+  rbind(
+    select(l1oDFplot,
+           check = study, 
+           lower = ci.lb,
+           estimate = estimate,
+           upper = ci.ub)
+    ) |>
+  mutate(se = (upper - lower)/(2*qnorm(p = 0.975)),
+         p = 2*(1 - pnorm(abs(estimate/se)))) |>
+  kable(digits = 3)
+```
+
+Computational environment used for this analysis:
+```{r}
+sessionInfo()
+```
